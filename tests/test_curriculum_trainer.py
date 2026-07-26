@@ -10,12 +10,7 @@ import stim
 import torch
 
 from sampling.sampler import WorkerSampler, settings_from_circuit_dir
-from training import (
-    CurriculumConfig,
-    CurriculumStage,
-    CurriculumTrainer,
-    TrainConfig,
-)
+from training import CurriculumConfig, CurriculumStage, CurriculumTrainer, TrainConfig
 
 
 @pytest.fixture()
