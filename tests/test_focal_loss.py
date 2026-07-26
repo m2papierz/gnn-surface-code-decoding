@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from model.trainer import FocalBCEWithLogitsLoss
+from training import FocalBCEWithLogitsLoss
 
 
 class TestFocalBCEWithLogitsLoss:

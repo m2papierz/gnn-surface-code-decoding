@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from model.trainer import TrainConfig, Trainer
+from training import TrainConfig, Trainer
 
 
 def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:

@@ -16,13 +16,13 @@ import torch
 from torch_geometric.data import Batch, Data
 
 from model.decoder import QECDecoder, build_model
-from model.trainer import FocalBCEWithLogitsLoss
 from sampling.graph import (
     EDGE_DIM,
     NODE_DIM,
     CircuitMetadata,
     build_fired_detector_graph,
 )
+from training import FocalBCEWithLogitsLoss
 
 
 CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard"

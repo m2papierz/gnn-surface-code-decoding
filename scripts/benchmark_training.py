@@ -34,8 +34,8 @@ from torch.optim import AdamW
 from torch_geometric.data import Batch, Data
 
 from model.decoder import build_model
-from model.trainer import FocalBCEWithLogitsLoss
 from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
+from training import FocalBCEWithLogitsLoss
 
 
 logger = logging.getLogger(__name__)
