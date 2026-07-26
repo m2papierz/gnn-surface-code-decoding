@@ -16,10 +16,7 @@ from pathlib import Path
 import numpy as np
 import stim
 
-from sampling.graph import (
-    CircuitMetadata,
-    extract_circuit_metadata,
-)
+from sampling.graph import CircuitMetadata, extract_circuit_metadata
 from sampling.seeding import stable_seed
 
 
@@ -131,7 +128,7 @@ class WorkerSampler:
 
     Each DataLoader worker creates one ``WorkerSampler`` with a
     deterministic seed.  The sampler holds compiled samplers for every
-    circuit setting and a PCG64 RNG for uniform setting selection.
+    circuit setting and a PCG64 RNG for setting selection.
 
     Parameters
     ----------
@@ -140,12 +137,16 @@ class WorkerSampler:
     worker_seed : int
         Deterministic per-worker seed (derived from master seed + worker id
         via BLAKE2b ``stable_seed``).
+    weights : ndarray, shape ``(len(settings),)``, optional
+        Per-setting sampling probabilities.  If ``None``, settings are
+        sampled uniformly.  Weights are normalized internally.
     """
 
     def __init__(
         self,
         settings: Sequence[CircuitSetting],
         worker_seed: int,
+        weights: np.ndarray | None = None,
     ) -> None:
         if not settings:
             raise ValueError("At least one CircuitSetting required")
@@ -155,6 +156,19 @@ class WorkerSampler:
         self._error_probs: list[float] = []
         self._samplers: list[stim.CompiledDetectorSampler] = []
         self._metadata: list[CircuitMetadata] = []
+
+        if weights is not None:
+            if len(weights) != len(settings):
+                raise ValueError(
+                    f"weights length ({len(weights)}) must match "
+                    f"settings length ({len(settings)})"
+                )
+            total = weights.sum()
+            if total <= 0:
+                raise ValueError("weights must sum to a positive value")
+            self._weights: np.ndarray | None = weights / total
+        else:
+            self._weights = None
 
         for i, s in enumerate(settings):
             circuit = stim.Circuit.from_file(str(s.circuit_path))
@@ -180,7 +194,10 @@ class WorkerSampler:
         error_prob : float
             Physical error probability of the sampled setting.
         """
-        idx = int(self._rng.integers(self._n_settings))
+        if self._weights is not None:
+            idx = int(self._rng.choice(self._n_settings, p=self._weights))
+        else:
+            idx = int(self._rng.integers(self._n_settings))
         dets, obs = self._samplers[idx].sample(
             shots=1, separate_observables=True, bit_packed=False
         )

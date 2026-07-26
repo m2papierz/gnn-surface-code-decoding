@@ -64,6 +64,11 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         Master seed for reproducibility.
     include_p_feature : bool
         If ``True``, attach ``p`` as a graph-level feature.
+    distance_weights : dict mapping int to float, optional
+        Per-distance sampling weights.  Within each distance, settings
+        are sampled uniformly; across distances, the probability is
+        proportional to the weight.  If ``None``, all settings are
+        sampled uniformly (default).
     """
 
     node_dim: int = NODE_DIM
@@ -75,6 +80,7 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         settings: Sequence[CircuitSetting],
         master_seed: int,
         include_p_feature: bool = False,
+        distance_weights: dict[int, float] | None = None,
     ) -> None:
         super().__init__()
         self.settings = list(settings)
@@ -84,13 +90,41 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         if not self.settings:
             raise ValueError("At least one CircuitSetting required")
 
+        self._setting_weights = self._compute_setting_weights(distance_weights)
+
+    def _compute_setting_weights(
+        self, distance_weights: dict[int, float] | None
+    ) -> np.ndarray | None:
+        """Convert per-distance weights to per-setting weights."""
+        if distance_weights is None:
+            return None
+
+        dist_counts: dict[int, int] = {}
+        for s in self.settings:
+            dist_counts[s.distance] = dist_counts.get(s.distance, 0) + 1
+
+        weights = np.array(
+            [
+                distance_weights.get(s.distance, 0.0) / dist_counts[s.distance]
+                for s in self.settings
+            ],
+            dtype=np.float64,
+        )
+
+        total = weights.sum()
+        if total <= 0:
+            return None
+        return weights / total
+
     def __iter__(self) -> Iterator[Data]:
         worker_info = torch.utils.data.get_worker_info()
         worker_id = 0 if worker_info is None else worker_info.id
 
         worker_seed = stable_seed("worker", f"id={worker_id}", base=self.master_seed)
         assert worker_seed is not None
-        sampler = WorkerSampler(self.settings, worker_seed)
+        sampler = WorkerSampler(
+            self.settings, worker_seed, weights=self._setting_weights
+        )
 
         while True:
             syndrome, obs, meta, error_prob = sampler.sample()

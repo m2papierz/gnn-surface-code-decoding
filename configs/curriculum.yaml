@@ -1,0 +1,77 @@
+# Mixed-d curriculum training
+# ===========================
+# Trains a single model through 3 → 3+5 → 3+5+7 curriculum with
+# adaptive replay sampling proportional to LER gap to MWPM.
+
+backend: "compiled"
+compile_mode: "default"
+amp_dtype: "bfloat16"
+
+# Data paths
+circuit_dir: "./data/circuits"
+output_dir: "./outputs/mixed_d"
+
+# Model architecture (same as per-distance configs)
+model:
+  hidden_dim: 128
+  num_layers: 6
+  dropout: 0.1
+
+# Optimisation
+optimisation:
+  lr: 1.5e-4
+  weight_decay: 1.0e-5
+  batch_size: 128
+
+# sample_budget is ignored by CurriculumTrainer (uses stage budgets).
+sample_budget: 57_000_000
+
+# Validate every 100k samples.
+val_interval_samples: 100_000
+
+# val_size is not used — curriculum uses val_size_per_distance instead.
+val_size: 10_000
+
+# LR warmup fraction (of total curriculum budget).
+warmup_fraction: 0.05
+
+# No p conditioning for curriculum training.
+include_p_feature: false
+
+# Data loading
+num_workers: 4
+
+# Gradient clipping
+max_grad_norm: 1.0
+
+# Early stopping: 15 checks without improvement.
+patience: 15
+
+# Reproducibility
+seed: 42
+
+# Curriculum configuration
+curriculum:
+  stages:
+    - distances: [3]
+      budget: 2_000_000
+    - distances: [3, 5]
+      budget: 5_000_000
+    - distances: [3, 5, 7]
+      budget: 50_000_000
+
+  # Baseline MWPM LER per distance (mean across p values, from T13/T15/T17
+  # frozen eval sets).
+  mwpm_ler:
+    3: 0.0332
+    5: 0.0426
+    7: 0.0510
+
+  # Re-measure per-distance LER gap every 500k samples.
+  gap_eval_interval: 500_000
+
+  # Minimum per-distance weight (prevents starvation).
+  min_distance_weight: 0.1
+
+  # Frozen validation samples per distance for gap measurement.
+  val_size_per_distance: 2_000
