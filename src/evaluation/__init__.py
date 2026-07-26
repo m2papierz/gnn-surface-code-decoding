@@ -2,17 +2,8 @@
 
 from __future__ import annotations
 
-from evaluation.evaluator import (
-    EvalPointResult,
-    EvalSet,
-    evaluate_point,
-)
-from evaluation.stats import (
-    EvalOutcome,
-    WilsonInterval,
-    mcnemar_test,
-    wilson_interval,
-)
+from evaluation.evaluator import EvalPointResult, EvalSet, evaluate_point
+from evaluation.stats import EvalOutcome, WilsonInterval, mcnemar_test, wilson_interval
 
 
 __all__ = [

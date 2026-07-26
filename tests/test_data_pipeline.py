@@ -16,11 +16,7 @@ from sampling.graph import (
     build_fired_detector_graph,
     extract_circuit_metadata,
 )
-from sampling.sampler import (
-    CircuitSetting,
-    WorkerSampler,
-    settings_from_circuit_dir,
-)
+from sampling.sampler import CircuitSetting, WorkerSampler, settings_from_circuit_dir
 
 
 def undirected_edges(edge_index: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

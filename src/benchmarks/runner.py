@@ -26,11 +26,7 @@ from typing import Any
 
 import torch
 
-from inference import (
-    InferenceEngine,
-    load_model_from_checkpoint,
-    make_synthetic_batch,
-)
+from inference import InferenceEngine, load_model_from_checkpoint, make_synthetic_batch
 
 
 logger = logging.getLogger(__name__)

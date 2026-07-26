@@ -31,10 +31,7 @@ from torch_geometric.data import Batch, Data
 
 from evaluation.calibration import expected_calibration_error, reliability_diagram
 from model.decoder import build_model
-from sampling.graph import (
-    build_fired_detector_graph,
-    extract_circuit_metadata,
-)
+from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
 
 
 logger = logging.getLogger(__name__)

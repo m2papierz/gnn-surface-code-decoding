@@ -32,10 +32,7 @@ from torch_geometric.data import Batch, Data
 
 from evaluation.stats import wilson_interval
 from model.decoder import build_model
-from sampling.graph import (
-    build_fired_detector_graph,
-    extract_circuit_metadata,
-)
+from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
 from sampling.sampler import settings_from_circuit_dir
 
 

@@ -4,11 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import Batch, Data
 
-from inference import (
-    InferenceBackend,
-    InferenceEngine,
-    make_synthetic_batch,
-)
+from inference import InferenceBackend, InferenceEngine, make_synthetic_batch
 from model.dataset import EDGE_DIM, NODE_DIM
 from model.decoder import build_model
 
