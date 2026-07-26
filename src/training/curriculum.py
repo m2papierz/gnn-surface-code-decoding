@@ -251,6 +251,8 @@ class CurriculumTrainer:
 
     def _run_stage(self, stage_idx: int, stage: CurriculumStage) -> None:
         """Execute a single curriculum stage."""
+        self.best_metric = float("inf")
+
         logger.info(
             "=== Curriculum stage %d: distances=%s, budget=%d ===",
             stage_idx,
@@ -468,9 +470,17 @@ class CurriculumTrainer:
             self.total_budget,
         )
 
+        n_stages = len(self.curriculum.stages)
         for stage_idx, stage in enumerate(self.curriculum.stages):
             self._run_stage(stage_idx, stage)
-            if self._stopped_early:
+            if self._stopped_early and stage_idx < n_stages - 1:
+                logger.info(
+                    "Stage %d converged; advancing to stage %d",
+                    stage_idx,
+                    stage_idx + 1,
+                )
+                self._stopped_early = False
+            elif self._stopped_early:
                 break
 
         history_path = self._run_dir / "history.json"

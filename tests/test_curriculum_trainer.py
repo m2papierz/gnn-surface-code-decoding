@@ -351,7 +351,9 @@ class TestWeightComputation:
 
 
 class TestCurriculumEarlyStopping:
-    def test_patience_stops_across_stages(self, circuit_dir, tmp_path) -> None:
+    def test_all_stages_run_despite_nonfinal_convergence(
+        self, circuit_dir, tmp_path
+    ) -> None:
         cfg = _make_train_config(
             circuit_dir,
             tmp_path / "out",
@@ -366,5 +368,84 @@ class TestCurriculumEarlyStopping:
         trainer = CurriculumTrainer(cfg, curriculum)
         trainer.fit()
 
+        assert len(trainer.stage_history) == 2
         assert trainer.samples_consumed < curriculum.total_budget
+
+    def test_final_stage_early_stop_ends_training(self, circuit_dir, tmp_path) -> None:
+        cfg = _make_train_config(
+            circuit_dir,
+            tmp_path / "out",
+            patience=2,
+        )
+        curriculum = _make_curriculum_config(
+            stages=(
+                CurriculumStage(distances=(3,), budget=50_000),
+                CurriculumStage(distances=(3, 5), budget=50_000),
+            ),
+        )
+        trainer = CurriculumTrainer(cfg, curriculum)
+        trainer.fit()
+
         assert trainer._stopped_early
+        assert trainer.samples_consumed < curriculum.total_budget
+
+    def test_best_metric_resets_at_stage_transition(
+        self, circuit_dir, tmp_path
+    ) -> None:
+        cfg = _make_train_config(
+            circuit_dir,
+            tmp_path / "out",
+            patience=0,
+        )
+        curriculum = _make_curriculum_config(
+            stages=(
+                CurriculumStage(distances=(3,), budget=500),
+                CurriculumStage(distances=(3, 5), budget=500),
+            ),
+        )
+        trainer = CurriculumTrainer(cfg, curriculum)
+        trainer.fit()
+
+        assert len(trainer.stage_history) == 2
+        stage_1_entries = [e for e in trainer.history if e["stage"] == 1]
+        assert any(e["best"] for e in stage_1_entries)
+
+    def test_three_stage_all_run_with_patience(self, circuit_dir_3d, tmp_path) -> None:
+        cfg = _make_train_config(
+            circuit_dir_3d,
+            tmp_path / "out",
+            patience=2,
+        )
+        curriculum = CurriculumConfig(
+            stages=(
+                CurriculumStage(distances=(3,), budget=50_000),
+                CurriculumStage(distances=(3, 5), budget=50_000),
+                CurriculumStage(distances=(3, 5, 7), budget=50_000),
+            ),
+            mwpm_ler={3: 0.05, 5: 0.09, 7: 0.12},
+            gap_eval_interval=50_000,
+            val_size_per_distance=30,
+        )
+        trainer = CurriculumTrainer(cfg, curriculum)
+        trainer.fit()
+
+        assert len(trainer.stage_history) == 3
+        assert trainer.samples_consumed < curriculum.total_budget
+
+    def test_checkpoint_saved_in_later_stage(self, circuit_dir, tmp_path) -> None:
+        cfg = _make_train_config(
+            circuit_dir,
+            tmp_path / "out",
+            patience=0,
+        )
+        curriculum = _make_curriculum_config(
+            stages=(
+                CurriculumStage(distances=(3,), budget=500),
+                CurriculumStage(distances=(3, 5), budget=500),
+            ),
+        )
+        trainer = CurriculumTrainer(cfg, curriculum)
+        best_path = trainer.fit()
+
+        ckpt = torch.load(best_path, weights_only=False)
+        assert ckpt["curriculum_stage"] == 1
