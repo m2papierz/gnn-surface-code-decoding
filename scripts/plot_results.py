@@ -1,13 +1,17 @@
-"""Produce LER vs physical error probability p figure.
+"""Produce the evaluation figures.
 
-Three panels (d=3, d=5, d=7), three decoders per panel (GNN, MWPM,
-Belief-Matching), Wilson 95% error bars, McNemar significance annotations
-for the GNN-vs-MWPM paired comparison.
+Fig. 1 — LER vs physical error probability p.  Three panels (d=3, d=5, d=7),
+three decoders per panel (GNN, MWPM, Belief-Matching), Wilson 95% error bars,
+McNemar significance annotations for the GNN-vs-MWPM paired comparison.
+
+Fig. 2 — LER vs code distance at a fixed p, with Wilson 95% error bars.  The
+reference p defaults to the median of the p values common to every distance.
 
 Examples
 --------
     uv run python scripts/plot_results.py
     uv run python scripts/plot_results.py --eval-dir outputs -o outputs/figures
+    uv run python scripts/plot_results.py --reference-p 0.005
 """
 
 from __future__ import annotations
@@ -73,6 +77,35 @@ def _significance_stars(p_value: float) -> str:
     return ""
 
 
+def _apply_style() -> None:
+    """Apply the shared figure style."""
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "axes.linewidth": 0.8,
+            "xtick.major.width": 0.8,
+            "ytick.major.width": 0.8,
+            "xtick.minor.width": 0.5,
+            "ytick.minor.width": 0.5,
+        }
+    )
+
+
+def _save_figure(fig: plt.Figure, output_dir: Path, stem: str) -> Path:
+    """Write *fig* as 300-dpi PNG and PDF, and return the PNG path."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    png_path = output_dir / f"{stem}.png"
+    pdf_path = output_dir / f"{stem}.pdf"
+
+    fig.savefig(png_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(pdf_path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+    logger.info("Saved %s", png_path)
+    logger.info("Saved %s", pdf_path)
+    return png_path
+
+
 def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
     """Produce Fig. 1 and save to output_dir as PNG (300 dpi) and PDF.
 
@@ -89,16 +122,7 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
     Path
         Path to the saved PNG file.
     """
-    plt.rcParams.update(
-        {
-            "font.family": "sans-serif",
-            "axes.linewidth": 0.8,
-            "xtick.major.width": 0.8,
-            "ytick.major.width": 0.8,
-            "xtick.minor.width": 0.5,
-            "ytick.minor.width": 0.5,
-        }
-    )
+    _apply_style()
 
     fig, axes = plt.subplots(
         1,
@@ -220,17 +244,118 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
         color="#666666",
     )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    png_path = output_dir / "fig1_ler_vs_p.png"
-    pdf_path = output_dir / "fig1_ler_vs_p.pdf"
+    return _save_figure(fig, output_dir, "fig1_ler_vs_p")
 
-    fig.savefig(png_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(pdf_path, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
 
-    logger.info("Saved %s", png_path)
-    logger.info("Saved %s", pdf_path)
-    return png_path
+def plot_ler_scaling_with_d(
+    eval_dir: Path,
+    output_dir: Path,
+    *,
+    reference_p: float | None = None,
+) -> Path:
+    """Produce Fig. 2 — LER vs code distance at one fixed physical error rate.
+
+    Error bars are the Wilson 95% intervals already carried by the evaluation
+    JSONs; a bare LER point would violate the project statistics policy.
+
+    Parameters
+    ----------
+    eval_dir : Path
+        Root directory containing the per-distance evaluation JSONs.
+    output_dir : Path
+        Directory for the output figure files.
+    reference_p : float or None
+        Physical error probability to slice at.  When None, the median of the
+        p values present at *every* distance is used.  A value that was not
+        evaluated snaps to the nearest one that was.
+
+    Returns
+    -------
+    Path
+        Path to the saved PNG file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a per-distance evaluation JSON is missing.
+    ValueError
+        If no single p value was evaluated at every distance.
+    """
+    _apply_style()
+
+    points_by_d: dict[int, list[dict[str, Any]]] = {}
+    for d in _DISTANCES:
+        eval_path = eval_dir / _EVAL_FILES[d]
+        if not eval_path.is_file():
+            raise FileNotFoundError(f"Eval file not found: {eval_path}")
+        points_by_d[d] = _load_eval(eval_path)
+
+    # Only p values common to every distance give a comparable slice.
+    shared_p = set.intersection(
+        *({pt["error_prob"] for pt in pts} for pts in points_by_d.values())
+    )
+    if not shared_p:
+        raise ValueError(
+            "no physical error probability was evaluated at every distance "
+            f"{_DISTANCES}, so no scaling slice is comparable"
+        )
+
+    available = sorted(shared_p)
+    if reference_p is None:
+        reference_p = available[len(available) // 2]
+    else:
+        reference_p = min(available, key=lambda p: abs(p - reference_p))
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+
+    for key in _DECODER_KEYS:
+        distances, lers, lo, hi = [], [], [], []
+        for d in _DISTANCES:
+            match = next(
+                (pt for pt in points_by_d[d] if pt["error_prob"] == reference_p),
+                None,
+            )
+            if match is None:
+                continue
+            entry = match["decoders"][key]
+            distances.append(d)
+            lers.append(entry["ler"])
+            lo.append(entry["ler_ci_95"][0])
+            hi.append(entry["ler_ci_95"][1])
+
+        if not distances:
+            continue
+
+        lers_arr = np.array(lers)
+        ax.errorbar(
+            distances,
+            lers_arr,
+            yerr=[lers_arr - np.array(lo), np.array(hi) - lers_arr],
+            label=_DECODER_LABELS[key],
+            color=_DECODER_COLORS[key],
+            marker=_DECODER_MARKERS[key],
+            markersize=7,
+            linewidth=1.8,
+            capsize=3,
+            capthick=1.2,
+            elinewidth=1.2,
+            zorder=3,
+        )
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Code distance $d$", fontsize=10)
+    ax.set_ylabel("Logical error rate (LER)", fontsize=10)
+    ax.set_title(
+        f"LER scaling at $p = {reference_p:g}$", fontsize=12, fontweight="bold"
+    )
+    ax.set_xticks(_DISTANCES)
+    ax.tick_params(axis="both", labelsize=9)
+    ax.grid(True, which="major", ls="-", alpha=0.15, color="#000000")
+    ax.grid(True, which="minor", ls=":", alpha=0.08, color="#000000")
+    ax.legend(fontsize=9, loc="best", frameon=True, edgecolor="#cccccc")
+    fig.tight_layout()
+
+    return _save_figure(fig, output_dir, "fig2_ler_scaling_d")
 
 
 def _annotate_mcnemar(
@@ -296,6 +421,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=Path("outputs/figures"),
         help="Where to save generated figures.",
     )
+    parser.add_argument(
+        "--reference-p",
+        type=float,
+        default=None,
+        help=(
+            "Physical error probability for the LER-vs-distance figure. "
+            "Defaults to the median p evaluated at every distance."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -308,6 +442,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     plot_ler_vs_p(args.eval_dir, args.output_dir)
+    plot_ler_scaling_with_d(
+        args.eval_dir, args.output_dir, reference_p=args.reference_p
+    )
 
 
 if __name__ == "__main__":
