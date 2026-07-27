@@ -161,6 +161,32 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="warmup_fraction"):
             TrainConfig(warmup_fraction=1.0)
 
+    def test_cuda_backend_is_rejected(self) -> None:
+        """The fast-path kernels are forward-only; training on them cannot work.
+
+        ``build_training_state`` passes this field straight to
+        ``model.ops.set_backend``, so without this guard a config could wire
+        inference-only kernels into the training loop.
+        """
+        with pytest.raises(ValueError, match="inference-only"):
+            TrainConfig(backend="cuda")
+
+    def test_unknown_backend_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="backend must be one of"):
+            TrainConfig(backend="tensorrt")
+
+    def test_training_backends_are_accepted(self) -> None:
+        assert TrainConfig(backend="pytorch").backend == "pytorch"
+        assert TrainConfig(backend="compiled").backend == "compiled"
+
+    def test_cuda_backend_is_rejected_from_yaml(self, tmp_path) -> None:
+        """YAML is the path the CLI's own `choices` guard does not cover."""
+        yaml_path = tmp_path / "train.yaml"
+        yaml_path.write_text('backend: "cuda"\n', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="inference-only"):
+            TrainConfig.from_yaml(yaml_path)
+
 
 class TestFromYaml:
     """TrainConfig.from_yaml parses the config file."""

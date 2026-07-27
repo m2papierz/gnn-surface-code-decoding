@@ -5,11 +5,17 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import torch
 import yaml
+
+
+# Backends that can carry a training run. ``model.ops`` also exposes ``cuda``;
+# it is deliberately absent here. Those kernels are forward-only and register
+# no autograd backward, so selecting one for training detaches the graph.
+_TRAINING_BACKENDS: Final[frozenset[str]] = frozenset({"pytorch", "compiled"})
 
 
 @dataclass
@@ -54,8 +60,9 @@ class TrainConfig:
         Path to checkpoint to resume from.
     backend : str
         Compute backend: ``"pytorch"`` (default) or ``"compiled"``
-        (recommended on GPU).  The ``"cuda"`` backend is inference-only
-        and must not be used for training (no autograd backward).
+        (recommended on GPU).  Rejected in ``__post_init__`` if it is
+        anything else; in particular the ``"cuda"`` backend is inference-only
+        and cannot train, since its kernels register no autograd backward.
     compile_mode : str
         ``torch.compile`` mode (only used when backend is ``"compiled"``).
         Use ``"default"`` for training — GNN batches have dynamic shapes
@@ -156,6 +163,18 @@ class TrainConfig:
         if not (0.0 < self.warmup_fraction < 1.0):
             raise ValueError(
                 f"warmup_fraction must be in (0, 1), got {self.warmup_fraction}"
+            )
+        if self.backend == "cuda":
+            raise ValueError(
+                "backend='cuda' is inference-only and cannot train: the custom "
+                "kernels are forward-only and register no autograd backward, so "
+                "the graph detaches and no gradient reaches the encoder. Use "
+                "'pytorch', or 'compiled' on GPU."
+            )
+        if self.backend not in _TRAINING_BACKENDS:
+            raise ValueError(
+                f"backend must be one of {sorted(_TRAINING_BACKENDS)}, "
+                f"got {self.backend!r}"
             )
 
 
