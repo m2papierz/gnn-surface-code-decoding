@@ -36,8 +36,9 @@ namespace qec {
         __device__ __forceinline__ void block_reduce_dual(
             float& sum, float& sum_sq, float* smem
         ) {
-            const int lane{threadIdx.x % 32};
-            const int warp_id{threadIdx.x / 32};
+            const int tid{static_cast<int>(threadIdx.x)};
+            const int lane{tid % 32};
+            const int warp_id{tid / 32};
             const int num_warps{static_cast<int>((blockDim.x + 31) / 32)};
 
             float* smem_sum{smem};

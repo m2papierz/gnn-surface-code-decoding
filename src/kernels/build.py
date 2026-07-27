@@ -17,9 +17,9 @@ from torch.utils.cpp_extension import load
 _CPP = Path(__file__).parent / "cpp"
 
 _SOURCES = [
-    str(_CPP / "fused_edge_features.cu"),
+    str(_CPP / "fused_edge_update.cu"),
     str(_CPP / "fused_norm_residual.cu"),
-    str(_CPP / "graph_norm_bce.cu"),
+    str(_CPP / "graph_build.cu"),
     str(_CPP / "bindings.cpp"),
 ]
 
@@ -30,7 +30,6 @@ _CUDA_ARCH_FLAGS = [
 
 _NVCC_FLAGS = [
     "-O3",
-    "--use_fast_math",
     "-std=c++17",
     "-lineinfo",
     "--ptxas-options=-v",

@@ -7,14 +7,40 @@ using attention-weighted, max, and sum node pooling.
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import torch
 import torch.nn as nn
-from torch_geometric.data import Batch
 from torch_geometric.nn import global_add_pool, global_max_pool
 from torch_geometric.utils import softmax
 
 from model.encoder import DetectorGraphEncoder
 from sampling.graph import EDGE_DIM, NODE_DIM
+
+
+class BatchedGraph(Protocol):
+    """Structural interface of a batched graph consumed by :class:`QECDecoder`.
+
+    Satisfied by ``torch_geometric.data.Batch`` and by
+    ``kernels.graph_build.DeviceGraphBatch``, so the device-side fast path
+    needs no adapter at the model boundary.
+
+    Attributes
+    ----------
+    x : Tensor, shape ``(N_total, node_dim)``
+    edge_index : Tensor, shape ``(2, E_total)``
+    edge_attr : Tensor, shape ``(E_total, edge_dim)``
+    batch : Tensor, shape ``(N_total,)``
+        Graph index of each node.
+    num_graphs : int
+        Graph count including graphs with zero nodes.
+    """
+
+    x: torch.Tensor
+    edge_index: torch.Tensor
+    edge_attr: torch.Tensor
+    batch: torch.Tensor
+    num_graphs: int
 
 
 class LogicalHead(nn.Module):
@@ -111,14 +137,14 @@ class QECDecoder(nn.Module):
         self.encoder = encoder
         self.head = head
 
-    def forward(self, batch: Batch) -> torch.Tensor:
+    def forward(self, batch: BatchedGraph) -> torch.Tensor:
         """Run full decode pipeline on a batched graph.
 
         Returns
         -------
         Tensor, shape ``(B, num_observables)``
         """
-        h, edge_h = self.encoder(batch.x, batch.edge_index, batch.edge_attr)
+        h, _ = self.encoder(batch.x, batch.edge_index, batch.edge_attr)
         return self.head(
             h,
             batch=batch.batch,

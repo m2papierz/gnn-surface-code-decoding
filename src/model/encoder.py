@@ -13,7 +13,13 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import GINEConv, LayerNorm
 
-from model.ops import fused_norm_residual_dropout, symmetric_edge_features
+from model.ops import (
+    Backend,
+    EdgeUpdateWeights,
+    edge_update,
+    fused_norm_residual_dropout,
+    get_backend,
+)
 from sampling.graph import EDGE_DIM, NODE_DIM
 
 
@@ -47,7 +53,11 @@ class _GINEBlock(nn.Module):
         )
         self.conv = GINEConv(nn=mlp, edge_dim=hidden_dim)
         self.edge_proj = nn.Linear(edge_dim, hidden_dim)
-        self.norm = LayerNorm(hidden_dim)
+        # mode="node" normalises each row over its own hidden channels.  PyG's
+        # default mode="graph", called without a batch vector, takes statistics
+        # over the whole batched tensor, which makes one shot's logits depend
+        # on the other shots sharing its batch.
+        self.norm = LayerNorm(hidden_dim, mode="node")
         self.dropout = nn.Dropout(dropout)
 
         self.edge_update = nn.Sequential(
@@ -55,7 +65,33 @@ class _GINEBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim),
         )
-        self.edge_norm = LayerNorm(hidden_dim)
+        self.edge_norm = LayerNorm(hidden_dim, mode="node")
+
+        # Column blocks of edge_update[0], derived lazily and re-derived
+        # whenever the parameter changes identity or is mutated in place.
+        # The nn.Linear remains the source of truth, so checkpoints written
+        # before the split existed still load unchanged.
+        self._edge_weights: EdgeUpdateWeights | None = None
+        self._edge_weights_key: tuple[int, int] | None = None
+
+    def _fused_edge_weights(self) -> EdgeUpdateWeights | None:
+        """Return the cached weight split, or None off the fast path.
+
+        The blocks are detached, so building them during training would both
+        strand the parameter's gradient and rebuild on every optimiser step
+        (the version counter bumps each time).  Returning None keeps the
+        ``pytorch`` and ``compiled`` backends on ``nn.Linear`` untouched.
+        """
+        if get_backend() is not Backend.CUDA:
+            return None
+
+        linear = self.edge_update[0]
+        assert isinstance(linear, nn.Linear)  # constructed above
+        key = (linear.weight.data_ptr(), linear.weight._version)
+        if self._edge_weights_key != key or self._edge_weights is None:
+            self._edge_weights = EdgeUpdateWeights.from_linear(linear)
+            self._edge_weights_key = key
+        return self._edge_weights
 
     def forward(
         self,
@@ -98,9 +134,13 @@ class _GINEBlock(nn.Module):
             self.training,
         )
 
-        # Edge update: symmetric features + MLP + norm/residual
-        e_input = symmetric_edge_features(x, edge_index, e)
-        e_new = self.edge_update(e_input)
+        # Edge update: symmetric features fused into their projection, then
+        # the rest of the MLP, then norm/residual.
+        e_new = edge_update(
+            x, edge_index, e, self.edge_update[0], self._fused_edge_weights()
+        )
+        for layer in self.edge_update[1:]:
+            e_new = layer(e_new)
         e_new = fused_norm_residual_dropout(
             e_new,
             e,

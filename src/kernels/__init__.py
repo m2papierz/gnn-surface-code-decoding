@@ -1,17 +1,30 @@
-"""Custom CUDA kernels for GNN-QEC decoding.
+"""Custom CUDA kernels for the GNN-QEC inference fast path.
 
-Provides fused implementations of compute-intensive operations:
+Forward-pass only — none of these ops implements an autograd backward, so
+reaching one from a training path yields silently wrong gradients.
 
-- ``symmetric_edge_features``: gather + sum/abs-diff/concat in one launch
-- ``fused_norm_residual_dropout``: LayerNorm + dropout + residual add
-- ``graph_normalized_bce``: per-graph BCE with scatter reduction
+- ``fused_edge_update``: gather, symmetric combine and GEMM in one launch,
+  never materialising the ``(E, 3H)`` concatenation
+- ``fused_norm_residual_dropout``: row-wise LayerNorm + dropout + residual
+- ``fired_detector_node_features`` / ``fired_detector_edges``: batched
+  syndromes to device-side complete graphs, bit-identical to the numpy builder
 """
 
+from __future__ import annotations
+
+# `_C` links against libc10/libtorch.  Importing it before torch has loaded
+# those shared objects fails with `ImportError: libc10.so`, which the try
+# below would silently report as "kernels not built".  Importing torch first
+# is what makes AVAILABLE mean what it says.
+import torch  # noqa: F401
+
+
 try:
-    from kernels._C import (
+    from kernels._C import (  # noqa: F401
+        fired_detector_edges,
+        fired_detector_node_features,
+        fused_edge_update,
         fused_norm_residual_dropout,
-        fused_symmetric_edge_features,
-        graph_normalized_bce,
     )
 
     AVAILABLE = True
