@@ -1,6 +1,6 @@
 # gnn-surface-code-decoding
 
-End-to-end pipeline for decoding surface codes with graph neural networks: Stim circuit sampling, detector graph construction, GNN training with on-the-fly data generation, multi-backend inference (PyTorch, compiled, TensorRT), statistically rigorous evaluation against classical baselines (MWPM, BP+OSD), and performance benchmarking.
+End-to-end pipeline for decoding surface codes with graph neural networks: Stim circuit sampling, detector graph construction, GNN training with on-the-fly data generation, multi-backend inference (PyTorch, compiled, custom CUDA), statistically rigorous evaluation against classical baselines (MWPM, BP+OSD), and performance benchmarking.
 
 > [!IMPORTANT]
 > **Learning project** — built to deepen hands-on understanding of GNN-based QEC decoding, detector graph construction, and the interplay between classical decoders and learned models. Not a production decoder.
@@ -57,23 +57,21 @@ See [`docs/eval_protocol.md`](docs/eval_protocol.md) for the pre-registered stop
 
 ## Deployment and benchmarking
 
-Benchmark inference across backends and export to TensorRT:
+Benchmark inference across backends:
 
 ```bash
-uv run scripts/benchmark_all.py -v           # inference latency/throughput/memory
-uv run scripts/export_trt.py --checkpoint outputs/runs/direct/best.pt
+uv run scripts/benchmark_all.py              # p50/p95/p99 latency, throughput, memory
 ```
 
-See [`docs/deployment.md`](docs/deployment.md) for the inference engine API, backend details, and TRT graph partitioning.
-
-See [`docs/kernels.md`](docs/kernels.md) for custom CUDA kernels (inference only).
+See [`docs/kernels.md`](docs/kernels.md) for the custom CUDA kernels, the backend
+selection rules, and the bucketed CUDA-Graphs fast path (inference only).
 
 ## Plots
 
-Generate evaluation and benchmark figures:
+Generate evaluation figures:
 
 ```bash
-uv run scripts/plot_results.py -v            # eval + benchmark figures
+uv run scripts/plot_results.py -v            # LER vs p, and LER vs distance
 uv run scripts/plot_calibration.py           # reliability diagrams and ECE
 ```
 

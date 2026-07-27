@@ -56,19 +56,21 @@ set_backend("cuda")  # inference only - no autograd backward
 Or via environment variable:
 
 ```bash
-QECDEC_BACKEND=cuda uv run scripts/eval_gnn.py \
+QECDEC_BACKEND=cuda uv run scripts/eval_harness.py \
     --checkpoint outputs/runs/direct/best.pt
 ```
 
 Or in benchmarking:
 
 ```bash
-uv run scripts/export_trt.py \
-    --checkpoint outputs/runs/direct/best.pt --backends cuda
+uv run scripts/benchmark_all.py --distance 7 --batch-size 1
 ```
 
-If kernels are not built, `set_backend("cuda")` falls back to PyTorch
-with a warning.
+If the kernels are not built, `set_backend("cuda")` **raises**. It does not
+downgrade to PyTorch: a silent downgrade would let a benchmark row or an
+equivalence test carry the name of a backend that never ran. The one exception
+is `QECDEC_BACKEND`, which is read at import time and degrades with a warning
+so that importing `model.ops` cannot fail over an env var.
 
 ## Testing
 
@@ -76,7 +78,7 @@ Equivalence tests verify CUDA kernels match PyTorch output within `atol=1e-5`:
 
 ```bash
 uv run scripts/build_kernels.py build_ext --inplace
-uv run pytest tests/test_ops_equivalence.py -k "CUDA" -v
+uv run pytest tests/test_ops.py tests/test_bucketed_forward.py -v
 ```
 
 Tests are automatically skipped without a GPU or without built kernels.
