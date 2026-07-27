@@ -14,10 +14,6 @@ dependencies = [
     "stim==1.15.0",
     "torch>=2.9.1",
     "torch-geometric>=2.7.0",
-    "torch-tensorrt>=2.9.0",
-    "tensorrt-cu12>=10.0",
-    "tensorrt-cu12-bindings>=10.0",
-    "tensorrt-cu12-libs>=10.0",
     "tqdm>=4.67.1",
     "cudaq-qec-cu12>=0.5.0.post1",
     "ldpc>=2.4.1",
@@ -36,20 +32,10 @@ dev = [
 package = true
 index-strategy = "unsafe-best-match"
 
-override-dependencies = [
-    "tensorrt ; python_version < '0'",
-    "tensorrt-cu13 ; python_version < '0'",
-    "tensorrt-cu13-bindings ; python_version < '0'",
-    "tensorrt-cu13-libs ; python_version < '0'",
-]
-
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
-
-[tool.uv.sources]
-torch-tensorrt = { index = "pytorch-cu128" }
 
 [tool.ruff]
 line-length = 88
