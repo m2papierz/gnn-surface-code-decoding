@@ -236,7 +236,7 @@ def _measure_gpu_rate() -> float | None:
 def _print_syndrome_stats(syndromes: np.ndarray) -> None:
     """Print fired-detector count statistics."""
     fired_counts = syndromes.sum(axis=1)
-    print(f"  Fired detector count (d=7, p=0.01):")
+    print("  Fired detector count (d=7, p=0.01):")
     print(f"    mean:   {fired_counts.mean():.1f}")
     print(f"    median: {np.median(fired_counts):.1f}")
     print(f"    p95:    {np.percentile(fired_counts, 95):.0f}")
@@ -345,8 +345,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
     else:
         print("  GPU consumption:       not measured (no CUDA)")
-        print(f"\n  Gate cannot be evaluated without GPU measurement.")
-        print(f"  For reference, if GPU rate were 10,000 samples/sec,")
+        print("\n  Gate cannot be evaluated without GPU measurement.")
+        print("  For reference, if GPU rate were 10,000 samples/sec,")
         print(f"  ratio would be {rate_n / 10_000:.2f}x")
     print()
 

@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import Batch, Data
 
-from model.decoder import LogicalHead, QECDecoder, build_model
+from model.decoder import LogicalHead, build_model
 
 
 def _make_graph(num_nodes: int = 6, num_edges: int = 10) -> Data:

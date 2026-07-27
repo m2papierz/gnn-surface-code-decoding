@@ -1,4 +1,4 @@
-"""Tests for committed Stim circuit files (T01).
+"""Tests for committed Stim circuit files.
 
 Every circuit file must load via ``stim.Circuit.from_file()`` and produce a
 valid DEM via ``.detector_error_model()``.  Settings: d∈{3,5,7}, r=d,

@@ -16,7 +16,6 @@ import torch
 
 from decoders import Decoder, GNNDecoder, PyMatchingDecoder
 from evaluation.evaluator import (
-    DecoderPointResult,
     EvalPointResult,
     EvalReport,
     EvalSet,

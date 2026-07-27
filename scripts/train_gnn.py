@@ -9,10 +9,12 @@ Examples
     uv run scripts/train_gnn.py -c configs/train_d3.yaml
 
     # Override distances and budget
-    uv run scripts/train_gnn.py -c configs/train.yaml --distances 3 --sample-budget 2000000
+    uv run scripts/train_gnn.py -c configs/train.yaml \
+        --distances 3 --sample-budget 2000000
 
     # Resume from checkpoint
-    uv run scripts/train_gnn.py -c configs/train.yaml --resume outputs/runs/direct/best.pt
+    uv run scripts/train_gnn.py -c configs/train.yaml \
+        --resume outputs/runs/direct/best.pt
 """
 
 from __future__ import annotations

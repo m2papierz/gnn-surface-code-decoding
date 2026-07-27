@@ -17,7 +17,8 @@ Usage
     uv run python scripts/eval_harness.py --dry-run
 
     # Custom output path
-    uv run python scripts/eval_harness.py --checkpoint best.pt -o outputs/eval_results.json
+    uv run python scripts/eval_harness.py --checkpoint best.pt \
+        -o outputs/eval_results.json
 """
 
 from __future__ import annotations
@@ -114,7 +115,10 @@ def _print_results(report: EvalReport) -> None:
             f"outcome={result.outcome.value} ---"
         )
 
-        header = f"{'Decoder':<10} {'LER':>10} {'95% CI':>24} {'ε (per-round)':>14} {'n_errors':>10}"
+        header = (
+            f"{'Decoder':<10} {'LER':>10} {'95% CI':>24} "
+            f"{'ε (per-round)':>14} {'n_errors':>10}"
+        )
         print(header)
         print("-" * len(header))
 
@@ -128,7 +132,7 @@ def _print_results(report: EvalReport) -> None:
 
         if result.mcnemar_results:
             print()
-            print(f"  McNemar (reference vs comparison):")
+            print("  McNemar (reference vs comparison):")
             for comp_name, mr in result.mcnemar_results.items():
                 print(
                     f"    vs {comp_name}: χ²={mr.statistic:.4f} "
