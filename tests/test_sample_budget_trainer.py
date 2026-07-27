@@ -187,6 +187,25 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="inference-only"):
             TrainConfig.from_yaml(yaml_path)
 
+    def test_misspelled_amp_dtype_is_rejected(self) -> None:
+        """A typo used to resolve to bfloat16 while the log echoed the typo."""
+        with pytest.raises(ValueError, match="amp_dtype must be one of"):
+            TrainConfig(amp_dtype="bflaot16")
+
+    def test_torch_attribute_that_is_not_a_dtype_is_rejected(self) -> None:
+        """getattr(torch, "nn") returns a module, which autocast cannot use."""
+        with pytest.raises(ValueError, match="amp_dtype must be one of"):
+            TrainConfig(amp_dtype="nn")
+
+    def test_real_dtype_outside_the_amp_set_is_rejected(self) -> None:
+        """float64 is a genuine dtype, and meaningless for autocast."""
+        with pytest.raises(ValueError, match="amp_dtype must be one of"):
+            TrainConfig(amp_dtype="float64")
+
+    def test_amp_dtype_resolves_to_the_torch_dtype(self) -> None:
+        assert TrainConfig(amp_dtype="bfloat16").amp_torch_dtype is torch.bfloat16
+        assert TrainConfig(amp_dtype="float16").amp_torch_dtype is torch.float16
+
 
 class TestFromYaml:
     """TrainConfig.from_yaml parses the config file."""

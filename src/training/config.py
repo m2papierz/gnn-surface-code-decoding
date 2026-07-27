@@ -17,6 +17,14 @@ import yaml
 # no autograd backward, so selecting one for training detaches the graph.
 _TRAINING_BACKENDS: Final[frozenset[str]] = frozenset({"pytorch", "compiled"})
 
+# Autocast dtypes, resolved here rather than by getattr(torch, name) so that a
+# typo cannot silently resolve to a default, and a name that happens to exist on
+# the torch module (``nn``, ``float64``) cannot reach autocast as a dtype.
+_AMP_DTYPES: Final[dict[str, torch.dtype]] = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+}
+
 
 @dataclass
 class TrainConfig:
@@ -70,9 +78,10 @@ class TrainConfig:
         excessive CUDA graphs and degrade performance over time.
     amp_dtype : str
         Autocast dtype for mixed precision: ``"bfloat16"`` (default,
-        recommended on Ampere+ GPUs) or ``"float16"``.  Only used
-        when training on CUDA.  Model weights, optimizer state, and
-        loss remain in float32 regardless.
+        recommended on Ampere+ GPUs) or ``"float16"``.  Any other value is
+        rejected in ``__post_init__``; use :attr:`amp_torch_dtype` to get the
+        resolved ``torch.dtype``.  Only used when training on CUDA.  Model
+        weights, optimizer state, and loss remain in float32 regardless.
     focal_alpha : float
         Focal loss balancing factor for the positive class.
     focal_gamma : float
@@ -176,6 +185,19 @@ class TrainConfig:
                 f"backend must be one of {sorted(_TRAINING_BACKENDS)}, "
                 f"got {self.backend!r}"
             )
+        if self.amp_dtype not in _AMP_DTYPES:
+            raise ValueError(
+                f"amp_dtype must be one of {sorted(_AMP_DTYPES)}, "
+                f"got {self.amp_dtype!r}"
+            )
+
+    @property
+    def amp_torch_dtype(self) -> torch.dtype:
+        """The autocast dtype named by :attr:`amp_dtype`.
+
+        Validated in ``__post_init__``, so this cannot raise.
+        """
+        return _AMP_DTYPES[self.amp_dtype]
 
 
 @dataclass(frozen=True, slots=True)

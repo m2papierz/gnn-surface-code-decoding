@@ -145,7 +145,7 @@ def build_training_state(
 
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler(enabled=use_amp)
-    amp_dtype = getattr(torch, cfg.amp_dtype, torch.bfloat16)
+    amp_dtype = cfg.amp_torch_dtype
     if use_amp:
         torch.set_float32_matmul_precision("high")
         logger.info("Mixed precision enabled (AMP, dtype=%s, TF32=high)", cfg.amp_dtype)
