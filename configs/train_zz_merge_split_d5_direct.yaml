@@ -1,19 +1,21 @@
-# d=5 training — per-distance model
-# ==================================
+# ZZ merge-split d=5 training - per-distance model
 # Trains only on d=5 circuits across all 4 error probabilities.
+# Budget: 30M samples (2× memory d=5 ratio; declared in TASKS LS16c).
 
 backend: "compiled"
 compile_mode: "default"
 amp_dtype: "bfloat16"
 
+# Experiment
+operation: "zz_merge_split"
+
 # Data paths
-circuit_dir: "./data/circuits"
-output_dir: "./outputs/d5_full"
+output_dir: "./outputs/runs"
 
 # Distance filter: train on d=5 only.
 distances: [5]
 
-# Model architecture (same as full config)
+# Model architecture (same as d=3)
 model:
   hidden_dim: 128
   num_layers: 6
@@ -25,8 +27,8 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 10M for d=5 (harder than d=3).
-sample_budget: 10_000_000
+# Sample budget: 30M for d=5 (2× memory d=5 budget of 15M).
+sample_budget: 30_000_000
 
 # Validate every 200k samples.
 val_interval_samples: 200_000
@@ -47,7 +49,7 @@ num_workers: 4
 max_grad_norm: 1.0
 
 # Early stopping: 15 checks without improvement (3M samples of runway
-# at val_interval_samples=200k, matching d=7's patience).
+# at val_interval_samples=200k).
 patience: 15
 
 # Reproducibility

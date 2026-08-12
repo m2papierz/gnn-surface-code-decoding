@@ -1,0 +1,58 @@
+# d=7 training - per-distance model
+# Trains only on d=7 circuits across all 4 error probabilities.
+# Larger budget than d=5: d=7 graphs have ~47 fired detectors (mean at
+# p=0.01) and ~2k edges per graph, requiring more training to converge.
+
+backend: "compiled"
+compile_mode: "default"
+amp_dtype: "bfloat16"
+
+# Experiment
+operation: "memory"
+
+# Data paths
+output_dir: "./outputs/runs"
+
+# Distance filter: train on d=7 only.
+distances: [7]
+
+# Model architecture (same as d=3/d=5)
+model:
+  hidden_dim: 128
+  num_layers: 6
+  dropout: 0.1
+
+# Optimisation
+optimisation:
+  lr: 1.5e-4
+  weight_decay: 1.0e-5
+  batch_size: 128
+
+# Sample budget: 50M for d=7 (significantly harder than d=5).
+# Adjust upward if convergence trend is positive but not converged.
+sample_budget: 50_000_000
+
+# Validate every 500k samples (wider interval for longer run).
+val_interval_samples: 500_000
+
+# Frozen validation set size.
+val_size: 10_000
+
+# LR warmup fraction.
+warmup_fraction: 0.05
+
+# No p conditioning for per-distance training.
+include_p_feature: false
+
+# Data loading
+num_workers: 4
+
+# Gradient clipping
+max_grad_norm: 1.0
+
+# Early stopping: 15 checks without improvement (7.5M samples of
+# patience at val_interval_samples=500k).
+patience: 15
+
+# Reproducibility
+seed: 42

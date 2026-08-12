@@ -1,0 +1,14 @@
+# ZZ merge-split all-distance evaluation - curriculum checkpoint
+
+operation: "zz_merge_split"
+checkpoint: "outputs/runs/zz_merge_split/mixed/curriculum/best.pt"
+distances: [3, 5, 7]
+batch_size: 256
+
+# Decoder suite
+include_belief_matching: true
+include_tesseract: false
+
+# Sanity eval settings
+shots: 100_000
+seed: 99

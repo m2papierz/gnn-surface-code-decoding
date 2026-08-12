@@ -1,16 +1,16 @@
-# d=7 training — per-distance model
-# ==================================
+# ZZ merge-split d=7 training - per-distance model
 # Trains only on d=7 circuits across all 4 error probabilities.
-# Larger budget than d=5: d=7 graphs have ~47 fired detectors (mean at
-# p=0.01) and ~2k edges per graph, requiring more training to converge.
+# Budget: 100M samples (2× memory d=7 ratio; declared in TASKS LS16c).
 
 backend: "compiled"
 compile_mode: "default"
 amp_dtype: "bfloat16"
 
+# Experiment
+operation: "zz_merge_split"
+
 # Data paths
-circuit_dir: "./data/circuits"
-output_dir: "./outputs/d7_full"
+output_dir: "./outputs/runs"
 
 # Distance filter: train on d=7 only.
 distances: [7]
@@ -27,9 +27,8 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 50M for d=7 (significantly harder than d=5).
-# Adjust upward if convergence trend is positive but not converged.
-sample_budget: 50_000_000
+# Sample budget: 100M for d=7 (2× memory d=7 budget of 50M).
+sample_budget: 100_000_000
 
 # Validate every 500k samples (wider interval for longer run).
 val_interval_samples: 500_000

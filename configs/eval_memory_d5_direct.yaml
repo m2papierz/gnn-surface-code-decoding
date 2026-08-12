@@ -1,0 +1,14 @@
+# Memory d=5 evaluation - per-distance checkpoint
+
+operation: "memory"
+checkpoint: "outputs/runs/memory/d5/direct/best.pt"
+distances: [5]
+batch_size: 256
+
+# Decoder suite
+include_belief_matching: true
+include_tesseract: false
+
+# Sanity eval settings
+shots: 100_000
+seed: 99

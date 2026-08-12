@@ -1,14 +1,15 @@
-# d=3 training — per-distance model
-# ==================================
+# d=3 training - per-distance model
 # Trains only on d=3 circuits across all 4 error probabilities.
 
 backend: "compiled"
 compile_mode: "default"
 amp_dtype: "bfloat16"
 
+# Experiment
+operation: "memory"
+
 # Data paths
-circuit_dir: "./data/circuits"
-output_dir: "./outputs/d3_full"
+output_dir: "./outputs/runs"
 
 # Distance filter: train on d=3 only.
 distances: [3]
@@ -25,8 +26,8 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 2M is ample for d=3 sanity.
-sample_budget: 2_000_000
+# Sample budget: 5M for d=3 with DEM edge weights.
+sample_budget: 5_000_000
 
 # Validate every 50k samples for frequent monitoring.
 val_interval_samples: 50_000

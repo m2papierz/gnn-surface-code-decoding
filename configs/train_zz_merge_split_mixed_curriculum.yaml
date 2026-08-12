@@ -1,0 +1,79 @@
+# ZZ merge-split mixed-d curriculum training
+# Trains a single model through d=3 => d=3+5 => d=3+5+7 curriculum with
+# adaptive replay sampling proportional to LER gap to MWPM.
+# Budget: 130M total (2× memory curriculum ratio; declared in TASKS LS16c).
+
+backend: "compiled"
+compile_mode: "default"
+amp_dtype: "bfloat16"
+
+# Experiment
+operation: "zz_merge_split"
+
+# Data paths
+output_dir: "./outputs/runs"
+
+# Model architecture (same as per-distance configs)
+model:
+  hidden_dim: 128
+  num_layers: 6
+  dropout: 0.1
+
+# Optimisation
+optimisation:
+  lr: 1.5e-4
+  weight_decay: 1.0e-5
+  batch_size: 128
+
+# sample_budget is ignored by CurriculumTrainer (uses stage budgets).
+sample_budget: 130_000_000
+
+# Validate every 200k samples.
+val_interval_samples: 200_000
+
+# val_size is not used - curriculum uses val_size_per_distance instead.
+val_size: 10_000
+
+# LR warmup fraction (of total curriculum budget).
+warmup_fraction: 0.05
+
+# No p conditioning for curriculum training.
+include_p_feature: false
+
+# Data loading
+num_workers: 4
+
+# Gradient clipping
+max_grad_norm: 1.0
+
+# Early stopping: 15 checks without improvement.
+patience: 15
+
+# Reproducibility
+seed: 42
+
+# Curriculum configuration
+curriculum:
+  stages:
+    - distances: [3]
+      budget: 4_000_000
+    - distances: [3, 5]
+      budget: 10_000_000
+    - distances: [3, 5, 7]
+      budget: 116_000_000
+
+  # Baseline MWPM LER per distance (mean across p values).
+  # TODO: fill from LS16b eval sets after generation.
+  mwpm_ler:
+    3: 0.0  # placeholder — measure after LS16b
+    5: 0.0  # placeholder — measure after LS16b
+    7: 0.0  # placeholder — measure after LS16b
+
+  # Re-measure per-distance LER gap every 500k samples.
+  gap_eval_interval: 500_000
+
+  # Minimum per-distance weight (prevents starvation).
+  min_distance_weight: 0.1
+
+  # Frozen validation samples per distance for gap measurement.
+  val_size_per_distance: 2_000

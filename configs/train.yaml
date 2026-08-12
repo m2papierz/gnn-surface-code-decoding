@@ -1,5 +1,4 @@
 # GNN Training Configuration
-# ==========================
 
 # Compute backend: "pytorch" or "compiled" for training.
 # "cuda" is inference-only (custom kernels lack autograd backward).
@@ -16,8 +15,10 @@ compile_mode: "default"
 # "float16".  Model weights and optimizer stay in float32 regardless.
 amp_dtype: "bfloat16"
 
+# Experiment
+operation: "memory"
+
 # Data paths
-circuit_dir: "./data/circuits"
 output_dir: "./outputs/runs"
 
 # Model architecture

@@ -1,0 +1,55 @@
+# d=5 training - per-distance model
+# Trains only on d=5 circuits across all 4 error probabilities.
+
+backend: "compiled"
+compile_mode: "default"
+amp_dtype: "bfloat16"
+
+# Experiment
+operation: "memory"
+
+# Data paths
+output_dir: "./outputs/runs"
+
+# Distance filter: train on d=5 only.
+distances: [5]
+
+# Model architecture (same as full config)
+model:
+  hidden_dim: 128
+  num_layers: 6
+  dropout: 0.1
+
+# Optimisation
+optimisation:
+  lr: 1.5e-4
+  weight_decay: 1.0e-5
+  batch_size: 128
+
+# Sample budget: 15M for d=5 with DEM edge weights.
+sample_budget: 15_000_000
+
+# Validate every 200k samples.
+val_interval_samples: 200_000
+
+# Frozen validation set size.
+val_size: 10_000
+
+# LR warmup fraction.
+warmup_fraction: 0.05
+
+# No p conditioning for per-distance training.
+include_p_feature: false
+
+# Data loading
+num_workers: 4
+
+# Gradient clipping
+max_grad_norm: 1.0
+
+# Early stopping: 15 checks without improvement (3M samples of runway
+# at val_interval_samples=200k, matching d=7's patience).
+patience: 15
+
+# Reproducibility
+seed: 42
