@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import stim
 
+from sampling.experiment import ExperimentKey, circuit_key, validate_operation_name
 from sampling.graph import CircuitMetadata, extract_circuit_metadata
 from sampling.seeding import stable_seed
 
@@ -56,16 +57,64 @@ class CircuitSetting:
             raise ValueError(f"error_prob must be in (0, 1), got {self.error_prob}")
 
 
+@dataclass(frozen=True, slots=True)
+class ExperimentPoint(CircuitSetting):
+    """A committed circuit resolved to its full experiment identity.
+
+    ``CircuitSetting`` is the operation-agnostic view the sampler consumes: it
+    needs a circuit and its physical parameters and nothing else.  This record
+    adds the axis the sampler must stay ignorant of - which experiment the
+    circuit belongs to - so that discovery can hand the same object to a
+    sampler and to a consumer that does care.
+
+    Parameters
+    ----------
+    circuit_path : Path
+        Path to the ``.stim`` circuit file.
+    distance : int
+        Code distance.
+    rounds : int
+        Number of syndrome measurement rounds.
+    error_prob : float
+        Physical error probability.
+    operation : str
+        Logical operation the circuit realizes.
+    """
+
+    operation: str
+
+    def __post_init__(self) -> None:
+        # Named explicitly rather than via ``super()``: ``slots=True`` rebuilds
+        # the class, so the zero-argument form resolves against the discarded
+        # original and raises.
+        CircuitSetting.__post_init__(self)
+        validate_operation_name(self.operation)
+
+    @property
+    def key(self) -> ExperimentKey:
+        """Identity of this point on the experiment axis."""
+        return ExperimentKey(
+            operation=self.operation,
+            distance=self.distance,
+            rounds=self.rounds,
+            error_prob=self.error_prob,
+        )
+
+
 def settings_from_circuit_dir(
     circuit_dir: Path,
     *,
     distances: Sequence[int] | None = None,
     error_probs: Sequence[float] | None = None,
-) -> list[CircuitSetting]:
-    """Discover circuit settings from committed ``.stim`` files.
+) -> list[ExperimentPoint]:
+    """Discover experiment points from committed ``.stim`` files.
 
-    Parses filenames matching ``d{d}_r{r}_p{p}.stim`` and optionally
-    filters by distance and error probability.
+    Every ``.stim`` file directly in ``circuit_dir`` is resolved to its
+    ``(operation, d, r, p)`` identity.  The manifest beside a circuit is
+    authoritative; the ``d{d}_r{r}_p{p}.stim`` filename is read only for a
+    circuit that carries none.  Discovery does not descend into
+    subdirectories, so a root holding one operation's circuits is discovered
+    by pointing this function at that root.
 
     Parameters
     ----------
@@ -78,49 +127,70 @@ def settings_from_circuit_dir(
 
     Returns
     -------
-    list[CircuitSetting]
-        Sorted by ``(distance, rounds, error_prob)``.
+    list[ExperimentPoint]
+        Sorted by ``(operation, distance, rounds, error_prob)``.
 
     Raises
     ------
+    NotADirectoryError
+        If ``circuit_dir`` does not exist or is not a directory.
     ValueError
-        If no matching circuit files are found.
+        If no matching circuit files are found, or if two circuits in the
+        directory resolve to the same experiment key.
     """
     circuit_dir = Path(circuit_dir)
+    if not circuit_dir.is_dir():
+        raise NotADirectoryError(f"Circuit directory does not exist: {circuit_dir}")
+
     dist_set = set(distances) if distances is not None else None
     prob_set = {round(p, 12) for p in error_probs} if error_probs is not None else None
 
-    settings: list[CircuitSetting] = []
+    points: list[ExperimentPoint] = []
+    claimed: dict[ExperimentKey, Path] = {}
     for f in sorted(circuit_dir.iterdir()):
         m = _CIRCUIT_FILENAME_RE.match(f.name)
         if m is None:
             continue
 
-        d = int(m.group(1))
-        r = int(m.group(2))
-        p = float(m.group(3).replace("_", "."))
+        key = circuit_key(
+            f,
+            distance=int(m.group(1)),
+            rounds=int(m.group(2)),
+            error_prob=float(m.group(3).replace("_", ".")),
+        )
 
-        if dist_set is not None and d not in dist_set:
+        # Two circuits under one identity would be sampled as two settings and
+        # silently double the weight of that point in the training mixture.
+        if key in claimed:
+            raise ValueError(
+                f"{f} and {claimed[key]} both resolve to the same experiment "
+                f"point ({key}); an identity names exactly one circuit"
+            )
+        claimed[key] = f
+
+        if dist_set is not None and key.distance not in dist_set:
             continue
-        if prob_set is not None and round(p, 12) not in prob_set:
+        if prob_set is not None and round(key.error_prob, 12) not in prob_set:
             continue
 
-        settings.append(
-            CircuitSetting(
+        points.append(
+            ExperimentPoint(
                 circuit_path=f,
-                distance=d,
-                rounds=r,
-                error_prob=p,
+                distance=key.distance,
+                rounds=key.rounds,
+                error_prob=key.error_prob,
+                operation=key.operation,
             )
         )
 
-    if not settings:
+    if not points:
         raise ValueError(
             f"No matching circuit files in {circuit_dir} "
             f"(distances={distances}, error_probs={error_probs})"
         )
 
-    return settings
+    points.sort(key=lambda pt: (pt.operation, pt.distance, pt.rounds, pt.error_prob))
+    return points
 
 
 class WorkerSampler:
@@ -147,6 +217,8 @@ class WorkerSampler:
         settings: Sequence[CircuitSetting],
         worker_seed: int,
         weights: np.ndarray | None = None,
+        metadata_extractor: Callable[[stim.Circuit, int, int], CircuitMetadata]
+        | None = None,
     ) -> None:
         if not settings:
             raise ValueError("At least one CircuitSetting required")
@@ -170,11 +242,16 @@ class WorkerSampler:
         else:
             self._weights = None
 
+        _extractor = (
+            metadata_extractor
+            if metadata_extractor is not None
+            else extract_circuit_metadata
+        )
         for i, s in enumerate(settings):
             circuit = stim.Circuit.from_file(str(s.circuit_path))
             sampler_seed = stable_seed("sampler", f"idx={i}", base=worker_seed)
             compiled = circuit.compile_detector_sampler(seed=sampler_seed)
-            meta = extract_circuit_metadata(circuit, s.distance, s.rounds)
+            meta = _extractor(circuit, s.distance, s.rounds)
 
             self._samplers.append(compiled)
             self._metadata.append(meta)
