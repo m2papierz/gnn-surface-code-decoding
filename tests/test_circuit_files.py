@@ -13,7 +13,7 @@ import pytest
 import stim
 
 
-CIRCUITS_DIR = Path(__file__).resolve().parent.parent / "data" / "circuits"
+CIRCUITS_DIR = Path(__file__).resolve().parent.parent / "data" / "circuits" / "memory"
 
 DISTANCES = [3, 5, 7]
 ERROR_PROBS = [0.003, 0.005, 0.008, 0.01]

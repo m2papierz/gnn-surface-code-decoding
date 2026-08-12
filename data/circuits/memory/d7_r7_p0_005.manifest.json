@@ -1,0 +1,13 @@
+{
+  "operation": "memory",
+  "distance": 7,
+  "rounds": 7,
+  "error_prob": 0.005,
+  "family": "rotated_memory_x",
+  "stim_version": "1.15.0",
+  "circuit_file": "data/circuits/memory/d7_r7_p0_005.stim",
+  "circuit_sha256": "2da488f9d239d673677b0b490eaf330c5b13479f24604801ab0c2fabcc9adfaa",
+  "num_detectors": 336,
+  "num_observables": 1,
+  "generation_command": "uv run python scripts/generate_circuits.py"
+}

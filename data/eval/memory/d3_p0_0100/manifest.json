@@ -1,0 +1,59 @@
+{
+  "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
+  "circuit_sha256": "c1ffb52a282581e204ba94ff19a8f3c911d6aca0f9020a0e31fa50493150b3c8",
+  "stim_version": "1.15.0",
+  "seed": 15091610813887942003,
+  "master_seed": 20240601,
+  "distance": 3,
+  "rounds": 3,
+  "error_prob": 0.01,
+  "num_shots": 50000,
+  "num_detectors": 24,
+  "num_observables": 1,
+  "mwpm_errors": 3236,
+  "mwpm_ler": 0.06472,
+  "positive_count": 9430,
+  "positive_rate": 0.1886,
+  "target_errors": 400,
+  "shot_cap": 1000000,
+  "target_met": true,
+  "fired_count_stats": {
+    "mean": 2.73044,
+    "median": 2.0,
+    "std": 2.1074006278826056,
+    "p99": 8.0,
+    "p99_9": 11.0,
+    "max": 15,
+    "min": 0,
+    "zero_count": 9109
+  },
+  "fired_count_buckets": {
+    "0_fired": {
+      "total": 9109,
+      "positive": 1,
+      "positive_rate": 0.00010978153474585575
+    },
+    "1_to_3_fired": {
+      "total": 24196,
+      "positive": 4899,
+      "positive_rate": 0.20247148288973385
+    },
+    "4_to_10_fired": {
+      "total": 16639,
+      "positive": 4509,
+      "positive_rate": 0.2709898431396118
+    },
+    "11_to_30_fired": {
+      "total": 56,
+      "positive": 21,
+      "positive_rate": 0.375
+    },
+    "31_plus_fired": {
+      "total": 0,
+      "positive": 0,
+      "positive_rate": 0.0
+    }
+  },
+  "n_max_p99_9": 11.0,
+  "generation_command": "uv run python scripts/generate_eval_sets.py"
+}

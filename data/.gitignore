@@ -4,17 +4,24 @@
 # excluding this file
 !.gitignore
 
-# and committed circuit files
+# Every artifact tree is partitioned by operation at its root, so each pattern
+# carries one <operation>/ level.
+
+# committed circuit files with the manifests that identify them
 !circuits/
-!circuits/*.stim
+!circuits/*/
+!circuits/*/*.stim
+!circuits/*/*.json
 
-# and committed CI shard
+# committed CI shard
 !ci_shard/
-!ci_shard/*.npy
-!ci_shard/*.json
+!ci_shard/*/
+!ci_shard/*/*.npy
+!ci_shard/*/*.json
 
-# and committed eval sets
+# committed eval sets
 !eval/
 !eval/*/
-!eval/*/*.npz
-!eval/*/*.json
+!eval/*/*/
+!eval/*/*/*.npz
+!eval/*/*/*.json
