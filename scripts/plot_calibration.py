@@ -9,10 +9,10 @@ annotation.
 Usage
 -----
     uv run python scripts/plot_calibration.py \
-        --checkpoint outputs/d3_full/direct/best.pt \
+        --checkpoint outputs/runs/memory/d3/direct/best.pt \
         --distance 3 \
-        --eval-dir data/eval \
-        --circuit-dir data/circuits \
+        --eval-dir data/eval/memory \
+        --circuit-dir data/circuits/memory \
         -o outputs/figures/calibration_d3.png
 """
 
@@ -47,7 +47,7 @@ def _collect_logits(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run model on syndromes and collect raw logits + matched labels.
 
-    Empty syndromes (zero fired detectors) are excluded — they short-circuit
+    Empty syndromes (zero fired detectors) are excluded - they short-circuit
     to no-flip and carry no calibration signal.
 
     Parameters
@@ -126,11 +126,15 @@ def _load_model(
     cfg = ckpt["config"]
     threshold = ckpt.get("decision_threshold", 0.0)
 
+    from sampling.representation import DataContract
+
+    contract = DataContract.from_checkpoint_config(cfg)
     model = build_model(
-        node_dim=cfg.get("node_dim", 6),
-        edge_dim=cfg.get("edge_dim", 5),
+        node_dim=contract.node_dim,
+        edge_dim=contract.edge_dim,
         hidden_dim=cfg.get("hidden_dim", 128),
         num_layers=cfg.get("num_layers", 6),
+        num_observables=contract.num_observables,
         dropout=0.0,
     ).to(device)
 
@@ -200,7 +204,7 @@ def _plot_reliability(
         )
 
     fig.suptitle(
-        f"Reliability diagram — d = {distance}, threshold = {threshold:.3f}",
+        f"Reliability diagram - d = {distance}, threshold = {threshold:.3f}",
         fontsize=12,
     )
     fig.tight_layout()
@@ -221,13 +225,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--eval-dir",
         type=Path,
-        default=Path("data/eval"),
+        default=Path("data/eval/memory"),
         help="Root eval set directory",
     )
     parser.add_argument(
         "--circuit-dir",
         type=Path,
-        default=Path("data/circuits"),
+        default=Path("data/circuits/memory"),
         help="Directory with .stim circuit files",
     )
     parser.add_argument(
@@ -270,7 +274,8 @@ def main(argv: list[str] | None = None) -> None:
         if observables.ndim == 1:
             observables = observables[:, np.newaxis]
 
-        circuit_path = args.circuit_dir / f"surface_code_d{d}_r{r}_p{p}.stim"
+        p_tag = f"p{p:.6g}".replace(".", "_")
+        circuit_path = args.circuit_dir / f"d{d}_r{r}_{p_tag}.stim"
         circuit = stim.Circuit.from_file(str(circuit_path))
         metadata = extract_circuit_metadata(circuit, d, r)
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 # Ensure we run from project root regardless of cwd.  setuptools and the torch
 # extension builder resolve paths at import time, so the chdir has to precede
-# them — hence the deliberate non-top-level imports below.
+# them - hence the deliberate non-top-level imports below.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 os.chdir(PROJECT_ROOT)
 
@@ -39,7 +39,7 @@ setup(
             include_dirs=[
                 str(cuda_src),
             ],
-            # No --use_fast_math — see the note in src/kernels/build.py.
+            # No --use_fast_math - see the note in src/kernels/build.py.
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
                 "nvcc": [

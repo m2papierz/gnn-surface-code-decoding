@@ -1,33 +1,46 @@
-"""Latency, throughput, and memory benchmark across all inference backends.
+"""Latency, throughput, and memory benchmark across inference backends.
 
 Measures p50/p95/p99 latency, per-shot throughput, and peak GPU memory for
-each backend on representative v2 batch shapes derived from Stim-sampled
-syndromes.
+GNN backends and classical decoders (Belief-Matching) on representative batch
+shapes derived from Stim-sampled syndromes.
 
-Backends tested (where available):
+``--operation`` selects the experiment axis and determines the circuit root,
+graph representation, and which backends are available.  The CUDA fast path
+(custom kernels, bucketed CUDA-Graphs) is spatial-only; for non-spatial
+representations (e.g. phased), only the PyTorch and compiled backends are
+measured, and the output carries a comparability caveat.
+
+GNN backends tested (where available):
 
 ``pytorch``
     Vanilla eager-mode PyTorch.
 ``compiled``
-    ``torch.compile(mode="default")`` — fuses ops via Triton.
+    ``torch.compile(mode="default")`` - fuses ops via Triton.
 ``cuda``
     Custom CUDA kernels (fused edge update, fused norm/residual), float32
-    throughout.
+    throughout.  Spatial only.
 ``bucketed``
     CUDA-Graphs-captured forward, bucketed on node and edge totals.
+    Spatial only.
 ``e2e_gpu+bucketed``
-    End-to-end: GPU graph build → bucketed CUDA-Graphs forward.  This is the
-    deployed latency path — timing starts at syndromes already in device
-    memory.
+    End-to-end: GPU graph build => bucketed CUDA-Graphs forward.  This is the
+    deployed latency path - timing starts at syndromes already in device
+    memory.  Spatial only.
+
+Classical decoders tested:
+
+``belief_matching``
+    BP + matching (beliefmatching package), CPU, shot-by-shot.  Timed with
+    ``time.perf_counter()``, same warmup and iteration count as GNN.
 
 Latency, not throughput, is the figure of merit: spec §9 frames this against
 µs-scale syndrome cycles, so the batch-1 row is the one that matters.
 
 Usage::
 
-    uv run python scripts/benchmark_all.py
-    uv run python scripts/benchmark_all.py \\
-        --distance 5 --batch-size 128 -o outputs/bench.json
+    uv run python scripts/benchmark_all.py --operation memory
+    uv run python scripts/benchmark_all.py --operation zz_merge_split \\
+        --distance 3 --batch-size 128 -o outputs/results/ls17_latency.json
 """
 
 from __future__ import annotations
@@ -35,6 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -46,26 +60,55 @@ from torch_geometric.data import Batch, Data
 
 from model.decoder import QECDecoder, build_model
 from model.ops import set_backend
-from sampling.graph import (
-    CircuitMetadata,
-    build_fired_detector_graph,
-    extract_circuit_metadata,
+from sampling.graph import CircuitMetadata
+from sampling.profile import resolve_profile
+from sampling.representation import (
+    SUPPORTED_FAST_PATH_VERSIONS,
+    resolve_builder,
 )
 
 
 logger = logging.getLogger(__name__)
 
-CIRCUIT_DIR = Path("data/circuits")
 DEFAULT_N_ITERS = 200
 WARMUP_ITERS = 30
 
 
-def _load(distance: int, error_prob: str) -> tuple[stim.Circuit, CircuitMetadata]:
-    path = CIRCUIT_DIR / f"d{distance}_r{distance}_p{error_prob}.stim"
-    circuit = stim.Circuit.from_file(str(path))
-    return circuit, extract_circuit_metadata(
-        circuit, distance=distance, rounds=distance
+def _find_circuit(
+    circuit_root: Path, distance: int, error_prob: str
+) -> tuple[Path, int]:
+    """Find a circuit file and extract its round count.
+
+    Returns
+    -------
+    tuple of (Path, int)
+        Circuit file path and number of rounds.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no matching circuit is found.
+    """
+    pattern = re.compile(rf"d{distance}_r(\d+)_p{re.escape(error_prob)}\.stim$")
+    for f in sorted(circuit_root.iterdir()):
+        m = pattern.match(f.name)
+        if m:
+            return f, int(m.group(1))
+    raise FileNotFoundError(
+        f"No circuit for d={distance}, p={error_prob} in {circuit_root}"
     )
+
+
+def _load(
+    profile_circuit_root: Path,
+    metadata_extractor: Callable,
+    distance: int,
+    error_prob: str,
+) -> tuple[Path, stim.Circuit, CircuitMetadata]:
+    path, rounds = _find_circuit(profile_circuit_root, distance, error_prob)
+    circuit = stim.Circuit.from_file(str(path))
+    metadata = metadata_extractor(circuit, distance, rounds)
+    return path, circuit, metadata
 
 
 def _percentiles(timings_ms: Sequence[float]) -> dict[str, float]:
@@ -78,9 +121,12 @@ def _percentiles(timings_ms: Sequence[float]) -> dict[str, float]:
 
 
 def _make_pyg_batch(
-    syndromes: np.ndarray, metadata: CircuitMetadata, device: torch.device
+    syndromes: np.ndarray,
+    metadata: CircuitMetadata,
+    device: torch.device,
+    builder: Callable,
 ) -> Batch:
-    graphs = [build_fired_detector_graph(s, metadata) for s in syndromes]
+    graphs = [builder(s, metadata) for s in syndromes]
     return Batch.from_data_list(
         [
             Data(
@@ -137,7 +183,7 @@ def _format_row(result: dict, batch_size: int) -> str:
         f"{result['p99_ms']:>10.4f}"
         f"{per_shot_us:>10.2f}"
         f"{shots_s:>12.0f}"
-        f"{result['peak_mem_mb']:>10.1f}"
+        f"{result.get('peak_mem_mb', 0):>10.1f}"
     )
 
 
@@ -153,7 +199,6 @@ def _run_backend(
     try:
         set_backend(ops_backend)
     except RuntimeError as exc:
-        # Skip the row rather than measure a different backend under this name.
         logger.warning("%s unavailable: %s", name, exc)
         return None
 
@@ -174,7 +219,34 @@ def _run_backend(
     timings = _time_cuda(fn, n_iters)
     stats = _percentiles(timings)
     set_backend("pytorch")
-    return {"backend": name, **stats, "peak_mem_mb": round(_peak_memory_mb(), 1)}
+    return {
+        "backend": name,
+        "timing_method": "cuda_events",
+        **stats,
+        "peak_mem_mb": round(_peak_memory_mb(), 1),
+    }
+
+
+def _run_belief_matching(
+    circuit_path: Path,
+    syndromes: np.ndarray,
+    n_iters: int,
+) -> dict | None:
+    """Time the Belief-Matching decoder on CPU."""
+    try:
+        from decoders import BeliefMatchingDecoder
+    except ImportError:
+        logger.warning("belief_matching unavailable: beliefmatching not installed")
+        return None
+
+    decoder = BeliefMatchingDecoder(circuit_path)
+
+    def fn() -> None:
+        decoder.decode_batch(syndromes)
+
+    timings = _time_cpu(fn, n_iters)
+    stats = _percentiles(timings)
+    return {"backend": "belief_matching", "timing_method": "perf_counter", **stats}
 
 
 def _run_device_path(
@@ -199,18 +271,22 @@ def _run_device_path(
         from kernels.bucketed import BucketedGraphRunner
         from kernels.graph_build import (
             build_fired_detector_graphs,
-            detector_coords_to_device,
+            metadata_to_device,
         )
     except ImportError:
         return None
 
     set_backend("cuda")
-    coords = detector_coords_to_device(metadata, device)
+    dev_meta = metadata_to_device(metadata, device)
     device_syn = torch.as_tensor(syndromes, device=device)
 
     def build():
         return build_fired_detector_graphs(
-            device_syn, coords, distance=metadata.distance, rounds=metadata.rounds
+            device_syn,
+            dev_meta.coords,
+            distance=metadata.distance,
+            rounds=metadata.rounds,
+            dem_weights=dev_meta.dem_weights,
         )
 
     prebuilt = build()
@@ -226,6 +302,7 @@ def _run_device_path(
 
     return {
         "backend": "e2e_gpu+bucketed" if end_to_end else "bucketed",
+        "timing_method": "cuda_events",
         **stats,
         "peak_mem_mb": round(_peak_memory_mb(), 1),
     }
@@ -235,6 +312,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--operation",
+        required=True,
+        help="Operation to benchmark (e.g. memory, zz_merge_split).",
     )
     parser.add_argument("--distance", type=int, default=7, choices=[3, 5, 7])
     parser.add_argument("--error-prob", default="0_01")
@@ -248,6 +330,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="Omit the torch.compile row (compilation costs a minute or two).",
     )
+    parser.add_argument(
+        "--skip-belief-matching",
+        action="store_true",
+        help="Omit the Belief-Matching decoder row.",
+    )
     parser.add_argument("-o", "--output", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -256,14 +343,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not torch.cuda.is_available():
         raise SystemExit("Benchmarks require a CUDA device.")
 
+    profile = resolve_profile(args.operation)
+    contract = profile.data_contract
+    representation = profile.representation_version
+    fast_path_available = representation in SUPPORTED_FAST_PATH_VERSIONS
+
     device = torch.device("cuda")
-    circuit, metadata = _load(args.distance, args.error_prob)
+    circuit_path, circuit, metadata = _load(
+        profile.circuit_root,
+        profile.metadata_extractor,
+        args.distance,
+        args.error_prob,
+    )
     sampler = circuit.compile_detector_sampler(seed=args.seed)
     syndromes = sampler.sample(shots=args.batch_size, bit_packed=False).astype(np.uint8)
 
     fired = syndromes.sum(axis=1)
     logger.info(
-        "d=%d  p=%s  detectors=%d  batch=%d",
+        "operation=%s  representation=%s  d=%d  p=%s  detectors=%d  batch=%d",
+        args.operation,
+        representation,
         args.distance,
         args.error_prob.replace("_", "."),
         metadata.num_detectors,
@@ -275,18 +374,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         np.percentile(fired, 99),
         fired.max(),
     )
+    if not fast_path_available:
+        logger.info(
+            "fast-path backends skipped: representation %r is not spatial",
+            representation,
+        )
     logger.info("GPU: %s\n", torch.cuda.get_device_name(0))
 
+    builder = resolve_builder(representation)
     model = (
         build_model(
+            node_dim=contract.node_dim,
+            edge_dim=contract.edge_dim,
             hidden_dim=args.hidden_dim,
             num_layers=args.num_layers,
+            num_observables=contract.num_observables,
             dropout=0.0,
         )
         .to(device)
         .eval()
     )
-    pyg_batch = _make_pyg_batch(syndromes, metadata, device)
+    pyg_batch = _make_pyg_batch(syndromes, metadata, device, builder)
 
     header = (
         f"{'backend':<24}{'p50 ms':>10}{'p95 ms':>10}{'p99 ms':>10}"
@@ -297,7 +405,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     rows: list[dict] = []
 
-    backends: list[tuple[str, Callable[[], dict | None]]] = [
+    gnn_backends: list[tuple[str, Callable[[], dict | None]]] = [
         (
             "pytorch",
             lambda: _run_backend("pytorch", model, pyg_batch, args.n_iters),
@@ -308,33 +416,52 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "compiled", model, pyg_batch, args.n_iters, compile_model=True
             ),
         ),
-        (
-            "cuda",
-            lambda: _run_backend(
-                "cuda", model, pyg_batch, args.n_iters, ops_backend="cuda"
-            ),
-        ),
-        *[
+    ]
+
+    if fast_path_available:
+        gnn_backends.extend(
+            [
+                (
+                    "cuda",
+                    lambda: _run_backend(
+                        "cuda", model, pyg_batch, args.n_iters, ops_backend="cuda"
+                    ),
+                ),
+                *[
+                    (
+                        "e2e_gpu+bucketed" if e2e else "bucketed",
+                        lambda e2e=e2e: _run_device_path(
+                            model,
+                            syndromes,
+                            metadata,
+                            device,
+                            args.n_iters,
+                            end_to_end=e2e,
+                        ),
+                    )
+                    for e2e in (False, True)
+                ],
+            ]
+        )
+
+    classical_backends: list[tuple[str, Callable[[], dict | None]]] = []
+    if not args.skip_belief_matching:
+        classical_backends.append(
             (
-                "e2e_gpu+bucketed" if e2e else "bucketed",
-                lambda e2e=e2e: _run_device_path(
-                    model,
+                "belief_matching",
+                lambda: _run_belief_matching(
+                    circuit_path,
                     syndromes,
-                    metadata,
-                    device,
                     args.n_iters,
-                    end_to_end=e2e,
                 ),
             )
-            for e2e in (False, True)
-        ],
-    ]
+        )
 
     skipped = set()
     if args.skip_compiled:
         skipped.add("compiled")
 
-    for name, run_fn in backends:
+    for name, run_fn in gnn_backends + classical_backends:
         if name in skipped:
             logger.info("%-24s skipped (--skip-%s)", name, name)
             continue
@@ -351,21 +478,42 @@ def main(argv: Sequence[str] | None = None) -> None:
         rows.append(result)
         logger.info("%s", _format_row(result, args.batch_size))
 
+    caveats: list[str] = []
+    if not fast_path_available:
+        caveats.append(
+            f"Representation {representation!r} cannot use the CUDA fast path "
+            f"(spatial-only). GNN latency here is from the PyTorch/compiled "
+            f"path and is NOT directly comparable to memory-track fast-path "
+            f"numbers."
+        )
+    if any(r["backend"] == "belief_matching" for r in rows):
+        caveats.append(
+            "Belief-Matching runs on CPU (shot-by-shot Python loop, timed "
+            "with time.perf_counter); GNN runs on GPU (timed with CUDA "
+            "events). The comparison measures deployed latency, not "
+            "algorithmic cost."
+        )
+
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict = {
+            "operation": args.operation,
+            "representation": representation,
+            "gpu": torch.cuda.get_device_name(0),
+            "distance": args.distance,
+            "error_prob": args.error_prob.replace("_", "."),
+            "batch_size": args.batch_size,
+            "hidden_dim": args.hidden_dim,
+            "num_layers": args.num_layers,
+            "n_iters": args.n_iters,
+            "warmup_iters": WARMUP_ITERS,
+            "fast_path_available": fast_path_available,
+            "results": rows,
+        }
+        if caveats:
+            payload["caveats"] = caveats
         args.output.write_text(
-            json.dumps(
-                {
-                    "gpu": torch.cuda.get_device_name(0),
-                    "distance": args.distance,
-                    "error_prob": args.error_prob.replace("_", "."),
-                    "batch_size": args.batch_size,
-                    "hidden_dim": args.hidden_dim,
-                    "num_layers": args.num_layers,
-                    "results": rows,
-                },
-                indent=2,
-            ),
+            json.dumps(payload, indent=2),
             encoding="utf-8",
         )
         logger.info("\nWrote %s", args.output)

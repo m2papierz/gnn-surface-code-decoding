@@ -1,15 +1,21 @@
-"""Generate frozen evaluation sets for all (d, p) evaluation points.
+"""Generate frozen evaluation sets for one operation's evaluation points.
 
-Adaptively samples shots from committed circuit files until each (d, p) point
+Adaptively samples shots from committed circuit files until each point
 accumulates ≥400 MWPM logical errors (target) or hits the 1,000,000 shot cap.
 Each set is saved as compressed numpy archives with a manifest recording all
-provenance information.
+provenance information, under the root of the operation its circuits declare.
+
+``--circuit-dir`` names one operation's circuit root and has no default: an
+evaluation set inherits the identity of the circuits it was sampled from, so
+which circuits those are is stated at the call rather than assumed.
 
 Usage
 -----
-    uv run python scripts/generate_eval_sets.py
-    uv run python scripts/generate_eval_sets.py --target-errors 400 --cap 1000000
-    uv run python scripts/generate_eval_sets.py --distances 3 5  # subset
+    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory
+    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory \
+        --target-errors 400 --cap 1000000
+    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory \
+        --distances 3 5  # subset
 """
 
 from __future__ import annotations
@@ -24,14 +30,15 @@ import numpy as np
 import pymatching
 import stim
 
+from sampling.experiment import ExperimentKey
+from sampling.profile import resolve_profile
 from sampling.sampler import settings_from_circuit_dir
 from sampling.seeding import stable_seed
 
 
 logger = logging.getLogger(__name__)
 
-CIRCUIT_DIR = Path("data/circuits")
-OUTPUT_DIR = Path("data/eval")
+OUTPUT_ROOT = Path("data/eval")
 MASTER_SEED = 20240601
 BATCH_SIZE = 50_000
 TARGET_ERRORS = 400
@@ -84,45 +91,61 @@ def _fired_count_buckets(syndromes: np.ndarray, observables: np.ndarray) -> dict
 
 def generate_eval_set(
     circuit_path: Path,
-    distance: int,
-    rounds: int,
-    error_prob: float,
+    key: ExperimentKey,
     *,
     target_errors: int = TARGET_ERRORS,
     shot_cap: int = SHOT_CAP,
     batch_size: int = BATCH_SIZE,
     master_seed: int = MASTER_SEED,
-    output_dir: Path = OUTPUT_DIR,
+    output_root: Path = OUTPUT_ROOT,
+    sizing_baseline: str = "mwpm",
 ) -> dict:
-    """Generate a frozen eval set for a single (d, p) point.
+    """Generate a frozen eval set for a single experiment point.
 
     Parameters
     ----------
     circuit_path : Path
         Path to the .stim circuit file.
-    distance, rounds : int
-        Code parameters.
-    error_prob : float
-        Physical error probability.
+    key : ExperimentKey
+        Identity of the point, resolved from the circuit by discovery and
+        recorded in the manifest.
     target_errors : int
-        Minimum MWPM errors to accumulate before stopping.
+        Minimum baseline errors to accumulate before stopping.
     shot_cap : int
         Maximum shots per point.
     batch_size : int
         Shots generated per sampling batch.
     master_seed : int
         Master seed for deterministic generation.
-    output_dir : Path
-        Root output directory.
+    output_root : Path
+        Root of the evaluation tree; the set is written under the operation
+        segment the key declares.
+    sizing_baseline : str
+        Decoder for adaptive sizing: ``"mwpm"`` or ``"correlated"``.
+        Lattice-surgery operations use correlated matching (eval protocol
+        §10.7) because it has a lower error rate than MWPM, requiring more
+        shots - the conservative direction.
 
     Returns
     -------
     dict
         Summary with error counts, fired-count stats, and paths.
     """
+    if sizing_baseline not in ("mwpm", "correlated"):
+        raise ValueError(
+            f"sizing_baseline must be 'mwpm' or 'correlated', got {sizing_baseline!r}"
+        )
+
+    distance = key.distance
+    rounds = key.rounds
+    error_prob = key.error_prob
+
     circuit = stim.Circuit.from_file(str(circuit_path))
     dem = circuit.detector_error_model(decompose_errors=True)
-    matching = pymatching.Matching.from_detector_error_model(dem)
+    use_correlations = sizing_baseline == "correlated"
+    matching = pymatching.Matching.from_detector_error_model(
+        dem, enable_correlations=use_correlations
+    )
     n_det = dem.num_detectors
     n_obs = dem.num_observables
 
@@ -131,7 +154,7 @@ def generate_eval_set(
 
     syndrome_batches: list[np.ndarray] = []
     observable_batches: list[np.ndarray] = []
-    mwpm_errors_total = 0
+    baseline_errors_total = 0
     shots_total = 0
 
     logger.info(
@@ -142,7 +165,7 @@ def generate_eval_set(
         shot_cap,
     )
 
-    while mwpm_errors_total < target_errors and shots_total < shot_cap:
+    while baseline_errors_total < target_errors and shots_total < shot_cap:
         remaining = shot_cap - shots_total
         n_batch = min(batch_size, remaining)
 
@@ -150,19 +173,22 @@ def generate_eval_set(
         syndromes = raw[:, :n_det].astype(np.uint8)
         observables = raw[:, n_det : n_det + n_obs].astype(np.uint8)
 
-        mwpm_pred = matching.decode_batch(syndromes)[:, :n_obs]
-        batch_errors = int(np.any(mwpm_pred != observables, axis=1).sum())
+        baseline_pred = matching.decode_batch(
+            syndromes, **({"enable_correlations": True} if use_correlations else {})
+        )[:, :n_obs]
+        batch_errors = int(np.any(baseline_pred != observables, axis=1).sum())
 
         syndrome_batches.append(syndromes)
         observable_batches.append(observables)
-        mwpm_errors_total += batch_errors
+        baseline_errors_total += batch_errors
         shots_total += n_batch
 
         logger.info(
-            "  batch +%d shots → %d/%d MWPM errors (total %d shots)",
+            "  batch +%d shots => %d/%d %s errors (total %d shots)",
             n_batch,
-            mwpm_errors_total,
+            baseline_errors_total,
             target_errors,
+            sizing_baseline,
             shots_total,
         )
 
@@ -173,57 +199,72 @@ def generate_eval_set(
     fired_stats = _fired_count_stats(all_syndromes)
     bucket_composition = _fired_count_buckets(all_syndromes, all_observables)
 
-    # Verify MWPM error count on full set (should match accumulated)
-    full_mwpm_pred = matching.decode_batch(all_syndromes)[:, :n_obs]
-    verified_errors = int(np.any(full_mwpm_pred != all_observables, axis=1).sum())
-    assert verified_errors == mwpm_errors_total, (
-        f"Accumulated {mwpm_errors_total} != verified {verified_errors}"
+    full_baseline_pred = matching.decode_batch(
+        all_syndromes, **({"enable_correlations": True} if use_correlations else {})
+    )[:, :n_obs]
+    verified_errors = int(np.any(full_baseline_pred != all_observables, axis=1).sum())
+    assert verified_errors == baseline_errors_total, (
+        f"Accumulated {baseline_errors_total} != verified {verified_errors}"
     )
 
-    # Extract detector coordinates
-    coord_dict = circuit.get_detector_coordinates()
-    detector_coords = np.zeros((n_det, 3), dtype=np.float64)
-    for det_id, c in coord_dict.items():
-        if 0 <= det_id < n_det:
-            detector_coords[det_id, : min(len(c), 3)] = c[:3]
+    # Extract metadata using the profile's extractor so the eval set carries
+    # the same inputs the builder will receive at training time.
+    profile = resolve_profile(key.operation)
+    metadata = profile.metadata_extractor(circuit, distance, rounds)
 
-    # Save
+    # Save - include phased metadata arrays when the operation provides them,
+    # so the eval set is self-contained for its representation.
     p_str = f"{error_prob:.4f}".replace(".", "_")
-    point_dir = output_dir / f"d{distance}_p{p_str}"
+    point_dir = output_root / key.operation / f"d{distance}_p{p_str}"
     point_dir.mkdir(parents=True, exist_ok=True)
 
-    np.savez_compressed(
-        point_dir / "data.npz",
-        syndromes=all_syndromes,
-        observables=all_observables,
-        detector_coords=detector_coords,
-    )
+    npz_arrays: dict[str, np.ndarray] = {
+        "syndromes": all_syndromes,
+        "observables": all_observables,
+        "detector_coords": metadata.detector_coords,
+    }
+    if metadata.phase_ids is not None:
+        npz_arrays["phase_ids"] = metadata.phase_ids
+        npz_arrays["patch_ids"] = metadata.patch_ids
+        npz_arrays["seam_mask"] = metadata.seam_mask
+
+    np.savez_compressed(point_dir / "data.npz", **npz_arrays)
 
     positive_count = int(all_observables.any(axis=1).sum())
-    manifest = {
+    manifest: dict = {
         "circuit_file": str(circuit_path),
         "circuit_sha256": _sha256(circuit_path),
         "stim_version": stim.__version__,
         "seed": seed,
         "master_seed": master_seed,
+        "operation": key.operation,
         "distance": distance,
         "rounds": rounds,
         "error_prob": error_prob,
         "num_shots": shots_total,
         "num_detectors": n_det,
         "num_observables": n_obs,
-        "mwpm_errors": verified_errors,
-        "mwpm_ler": verified_errors / shots_total,
+        "representation_version": profile.representation_version,
+        "observable_names": list(profile.observable_names),
+        "sizing_baseline": sizing_baseline,
+        "baseline_errors": verified_errors,
+        "baseline_ler": verified_errors / shots_total,
         "positive_count": positive_count,
         "positive_rate": positive_count / shots_total,
         "target_errors": target_errors,
         "shot_cap": shot_cap,
-        "target_met": mwpm_errors_total >= target_errors,
+        "target_met": baseline_errors_total >= target_errors,
         "fired_count_stats": fired_stats,
         "fired_count_buckets": bucket_composition,
         "n_max_p99_9": fired_stats["p99_9"],
-        "generation_command": "uv run python scripts/generate_eval_sets.py",
+        "generation_command": (
+            f"uv run python scripts/generate_eval_sets.py"
+            f" --circuit-dir {circuit_path.parent}"
+            f" --baseline {sizing_baseline}"
+        ),
     }
+    if metadata.phase_names is not None:
+        manifest["phase_names"] = list(metadata.phase_names)
 
     (point_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=False),
@@ -232,11 +273,12 @@ def generate_eval_set(
 
     met_str = "MET" if manifest["target_met"] else "BELOW TARGET"
     logger.info(
-        "  → %s: %d shots, %d MWPM errors (LER=%.6f), N_max(p99.9)=%.0f [%s]",
+        "  => %s: %d shots, %d %s errors (LER=%.6f), N_max(p99.9)=%.0f [%s]",
         point_dir.name,
         shots_total,
         verified_errors,
-        manifest["mwpm_ler"],
+        sizing_baseline,
+        manifest["baseline_ler"],
         fired_stats["p99_9"],
         met_str,
     )
@@ -252,10 +294,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--circuit-dir", type=Path, default=CIRCUIT_DIR, help="Circuit file directory"
+        "--circuit-dir",
+        type=Path,
+        required=True,
+        help="Circuit root of one operation, e.g. data/circuits/memory",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=OUTPUT_DIR, help="Output directory"
+        "--output-root",
+        type=Path,
+        default=OUTPUT_ROOT,
+        help="Root of the evaluation tree (default: %(default)s)",
     )
     parser.add_argument(
         "--target-errors", type=int, default=TARGET_ERRORS, help="Target MWPM errors"
@@ -268,6 +316,13 @@ def main() -> None:
     parser.add_argument(
         "--distances", type=int, nargs="*", default=None, help="Distances to generate"
     )
+    parser.add_argument(
+        "--baseline",
+        choices=["mwpm", "correlated"],
+        default="mwpm",
+        help="Decoder for adaptive sizing (eval protocol §10.7: correlated for "
+        "lattice-surgery). Default: %(default)s",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -276,44 +331,49 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    settings = settings_from_circuit_dir(args.circuit_dir, distances=args.distances)
-    logger.info("Generating eval sets for %d (d, p) points", len(settings))
+    points = settings_from_circuit_dir(args.circuit_dir, distances=args.distances)
+    logger.info("Generating eval sets for %d experiment points", len(points))
 
     results = []
     t0 = time.time()
 
-    for s in settings:
+    for s in points:
         manifest = generate_eval_set(
             circuit_path=s.circuit_path,
-            distance=s.distance,
-            rounds=s.rounds,
-            error_prob=s.error_prob,
+            key=s.key,
             target_errors=args.target_errors,
             shot_cap=args.cap,
             batch_size=args.batch_size,
             master_seed=args.seed,
-            output_dir=args.output_dir,
+            output_root=args.output_root,
+            sizing_baseline=args.baseline,
         )
         results.append(manifest)
 
     elapsed = time.time() - t0
 
     # Summary table
+    baseline_label = results[0].get("sizing_baseline", "mwpm") if results else "mwpm"
+    bl_col = f"{baseline_label} Err"
+    bl_ler_col = f"{baseline_label} LER"
+
     print()
     print("=" * 90)
     print("Frozen Eval Set Generation Summary")
     print("=" * 90)
     print(
-        f"{'Point':<14} {'Shots':>8} {'MWPM Err':>9} {'MWPM LER':>10} "
+        f"{'Point':<14} {'Shots':>8} {bl_col:>12} {bl_ler_col:>14} "
         f"{'Pos Rate':>9} {'N_max(p99.9)':>13} {'Status':>8}"
     )
     print("-" * 90)
     for r in results:
         status = "OK" if r["target_met"] else "BELOW"
+        bl_errors = r.get("baseline_errors", r.get("mwpm_errors", 0))
+        bl_ler = r.get("baseline_ler", r.get("mwpm_ler", 0.0))
         print(
             f"d{r['distance']}_p{r['error_prob']:<7.4f} "
-            f"{r['num_shots']:>8} {r['mwpm_errors']:>9} "
-            f"{r['mwpm_ler']:>10.6f} {r['positive_rate']:>9.4f} "
+            f"{r['num_shots']:>8} {bl_errors:>12} "
+            f"{bl_ler:>14.6f} {r['positive_rate']:>9.4f} "
             f"{r['n_max_p99_9']:>13.0f} {status:>8}"
         )
 
@@ -357,13 +417,14 @@ def main() -> None:
             f"WARNING: {len(below)} point(s) below {args.target_errors}-error target:"
         )
         for r in below:
+            bl_errors = r.get("baseline_errors", r.get("mwpm_errors", 0))
             print(
                 f"  d={r['distance']} p={r['error_prob']:.4f}: "
-                f"{r['mwpm_errors']} errors in {r['num_shots']} shots"
+                f"{bl_errors} errors in {r['num_shots']} shots"
             )
 
     print(f"\nTotal generation time: {elapsed:.1f}s")
-    print(f"Output directory: {args.output_dir}")
+    print(f"Output root: {args.output_root}")
 
 
 if __name__ == "__main__":

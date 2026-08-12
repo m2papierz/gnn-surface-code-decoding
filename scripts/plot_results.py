@@ -1,10 +1,10 @@
 """Produce the evaluation figures.
 
-Fig. 1 — LER vs physical error probability p.  Three panels (d=3, d=5, d=7),
+Fig. 1 - LER vs physical error probability p.  Three panels (d=3, d=5, d=7),
 three decoders per panel (GNN, MWPM, Belief-Matching), Wilson 95% error bars,
 McNemar significance annotations for the GNN-vs-MWPM paired comparison.
 
-Fig. 2 — LER vs code distance at a fixed p, with Wilson 95% error bars.  The
+Fig. 2 - LER vs code distance at a fixed p, with Wilson 95% error bars.  The
 reference p defaults to the median of the p values common to every distance.
 
 Examples
@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 
 _DISTANCES: list[int] = [3, 5, 7]
 _EVAL_FILES: dict[int, str] = {
-    3: "d3_full/eval_d3_full.json",
-    5: "d5_full/eval_d5_full.json",
-    7: "d7_full/eval_d7_full.json",
+    3: "runs/memory/d3/direct/eval.json",
+    5: "runs/memory/d5/direct/eval.json",
+    7: "runs/memory/d7/direct/eval.json",
 }
-_MIXED_EVAL_FILE: str = "mixed_d/eval_mixed_d.json"
+_MIXED_EVAL_FILE: str = "runs/memory/mixed/curriculum/eval.json"
 
 _DECODER_KEYS: list[str] = ["gnn", "mwpm", "belief_matching"]
 _DECODER_LABELS: dict[str, str] = {
@@ -112,8 +112,8 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
     Parameters
     ----------
     eval_dir : Path
-        Root directory containing ``d3_full/``, ``d5_full/``, ``d7_full/``
-        with per-distance evaluation JSONs.
+        Root directory containing ``runs/d{3,5,7}/memory/direct/eval.json``
+        per-distance evaluation results.
     output_dir : Path
         Directory for the output figure files.
 
@@ -253,7 +253,7 @@ def plot_ler_scaling_with_d(
     *,
     reference_p: float | None = None,
 ) -> Path:
-    """Produce Fig. 2 — LER vs code distance at one fixed physical error rate.
+    """Produce Fig. 2 - LER vs code distance at one fixed physical error rate.
 
     Error bars are the Wilson 95% intervals already carried by the evaluation
     JSONs; a bare LER point would violate the project statistics policy.
@@ -412,7 +412,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--eval-dir",
         type=Path,
         default=Path("outputs"),
-        help="Root directory with d3_full/, d5_full/, d7_full/ eval JSONs.",
+        help="Root directory with runs/d{3,5,7}/memory/direct/eval.json.",
     )
     parser.add_argument(
         "-o",

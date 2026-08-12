@@ -1,12 +1,16 @@
 """Train a GNN-based QEC decoder.
 
+Dispatches to direct training or curriculum training based on the config:
+if the YAML contains a ``curriculum:`` section, runs ``CurriculumTrainer``;
+otherwise runs ``Trainer``.
+
 Examples
 --------
-    # Train from config (recommended)
-    uv run scripts/train_gnn.py -c configs/train.yaml
+    # Direct training from config
+    uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
 
-    # d=3 sanity run
-    uv run scripts/train_gnn.py -c configs/train_d3.yaml
+    # Curriculum training (detected from config)
+    uv run scripts/train_gnn.py -c configs/train_memory_mixed_curriculum.yaml
 
     # Override distances and budget
     uv run scripts/train_gnn.py -c configs/train.yaml \
@@ -14,7 +18,7 @@ Examples
 
     # Resume from checkpoint
     uv run scripts/train_gnn.py -c configs/train.yaml \
-        --resume outputs/runs/direct/best.pt
+        --resume outputs/runs/memory/d3/direct/best.pt
 """
 
 from __future__ import annotations
@@ -24,11 +28,15 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from training import TrainConfig, Trainer
+import yaml
+
+from training import CurriculumConfig, CurriculumTrainer, TrainConfig, Trainer
 
 
-def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
-    """Parse CLI arguments into a :class:`TrainConfig`.
+def parse_args(
+    argv: Sequence[str] | None = None,
+) -> tuple[TrainConfig, CurriculumConfig | None]:
+    """Parse CLI arguments into a :class:`TrainConfig` and optional curriculum.
 
     CLI args override values loaded from YAML config.
     """
@@ -86,8 +94,13 @@ def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    # Load YAML and detect curriculum
+    curriculum_cfg: CurriculumConfig | None = None
     if args.config is not None and args.config.is_file():
+        raw = yaml.safe_load(args.config.read_text(encoding="utf-8"))
         cfg = TrainConfig.from_yaml(args.config)
+        if "curriculum" in raw:
+            curriculum_cfg = CurriculumConfig.from_yaml(raw["curriculum"])
     elif args.config is not None and not args.config.is_file():
         logging.getLogger(__name__).warning(
             "Config file %s not found, using defaults",
@@ -132,13 +145,17 @@ def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
     if cfg_dict.get("resume") is not None:
         cfg_dict["resume"] = Path(cfg_dict["resume"])
 
-    return TrainConfig(**cfg_dict)
+    return TrainConfig(**cfg_dict), curriculum_cfg
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for GNN training."""
-    cfg = parse_args(argv)
-    Trainer(cfg).fit()
+    cfg, curriculum_cfg = parse_args(argv)
+
+    if curriculum_cfg is not None:
+        CurriculumTrainer(cfg, curriculum_cfg).fit()
+    else:
+        Trainer(cfg).fit()
 
 
 if __name__ == "__main__":
