@@ -87,7 +87,7 @@ class TestSampleBudgetSmoke:
         trainer = Trainer(cfg)
         trainer.fit()
 
-        history_path = tmp_path / "out" / "direct" / "history.json"
+        history_path = tmp_path / "out" / "memory" / "mixed" / "direct" / "history.json"
         assert history_path.exists()
         history = json.loads(history_path.read_text())
         assert len(history) >= 2
@@ -98,12 +98,12 @@ class TestSampleBudgetSmoke:
         trainer = Trainer(cfg)
         trainer.fit()
 
-        config_path = tmp_path / "out" / "direct" / "config.json"
+        config_path = tmp_path / "out" / "memory" / "mixed" / "direct" / "config.json"
         assert config_path.exists()
         saved = json.loads(config_path.read_text())
         assert saved["sample_budget"] == 1000
         assert saved["node_dim"] == 6
-        assert saved["edge_dim"] == 5
+        assert saved["edge_dim"] == 6
 
 
 class TestEarlyStopping:
@@ -207,12 +207,71 @@ class TestConfigValidation:
         assert TrainConfig(amp_dtype="float16").amp_torch_dtype is torch.float16
 
 
+class TestOperationConfig:
+    """TrainConfig resolves the operation to a profile."""
+
+    def test_unknown_operation_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown operation"):
+            TrainConfig(operation="nonexistent_op", circuit_dir=".")
+
+    def test_default_operation_is_memory(self) -> None:
+        cfg = TrainConfig()
+        assert cfg.operation == "memory"
+
+    def test_circuit_dir_populated_from_profile(self) -> None:
+        from pathlib import Path
+
+        cfg = TrainConfig(operation="memory")
+        assert cfg.circuit_dir == Path("data/circuits/memory")
+
+    def test_circuit_dir_override_preserved(self, circuit_dir) -> None:
+        cfg = TrainConfig(operation="memory", circuit_dir=circuit_dir)
+        assert cfg.circuit_dir == circuit_dir
+
+
+class TestRunDir:
+    """Run directory computed from (profile, strategy)."""
+
+    def test_resolve_run_dir_layout(self) -> None:
+        from pathlib import Path
+
+        from training.primitives import resolve_run_dir
+
+        d = resolve_run_dir(Path("outputs/runs"), "memory", [3], "direct")
+        assert d == Path("outputs/runs/memory/d3/direct")
+
+    def test_resolve_run_dir_curriculum_layout(self) -> None:
+        from pathlib import Path
+
+        from training.primitives import resolve_run_dir
+
+        d = resolve_run_dir(Path("outputs/runs"), "memory", None, "curriculum")
+        assert d == Path("outputs/runs/memory/mixed/curriculum")
+
+    def test_resolve_run_dir_different_strategies_disjoint(self) -> None:
+        from pathlib import Path
+
+        from training.primitives import resolve_run_dir
+
+        d1 = resolve_run_dir(Path("out"), "memory", [3], "direct")
+        d2 = resolve_run_dir(Path("out"), "memory", None, "curriculum")
+        assert d1 != d2
+
+    def test_resolve_run_dir_unknown_operation_raises(self) -> None:
+        from pathlib import Path
+
+        from training.primitives import resolve_run_dir
+
+        with pytest.raises(ValueError, match="Unknown operation"):
+            resolve_run_dir(Path("out"), "nonexistent_op", [3], "direct")
+
+
 class TestFromYaml:
     """TrainConfig.from_yaml parses the config file."""
 
     def test_loads_sample_budget_config(self, tmp_path) -> None:
         yaml_content = """\
-circuit_dir: "./data/circuits"
+circuit_dir: "./data/circuits/memory"
 output_dir: "./outputs"
 model:
   hidden_dim: 64
@@ -234,6 +293,7 @@ seed: 123
 
         cfg = TrainConfig.from_yaml(yaml_path)
 
+        assert cfg.operation == "memory"
         assert cfg.hidden_dim == 64
         assert cfg.num_layers == 3
         assert cfg.dropout == 0.05
@@ -245,3 +305,25 @@ seed: 123
         assert cfg.warmup_fraction == 0.03
         assert cfg.patience == 5
         assert cfg.seed == 123
+
+    def test_from_yaml_reads_operation(self, tmp_path) -> None:
+        yaml_content = """\
+operation: "memory"
+output_dir: "./outputs"
+"""
+        yaml_path = tmp_path / "train.yaml"
+        yaml_path.write_text(yaml_content)
+
+        cfg = TrainConfig.from_yaml(yaml_path)
+        assert cfg.operation == "memory"
+
+    def test_from_yaml_unknown_operation_rejected(self, tmp_path) -> None:
+        yaml_content = """\
+operation: "bogus"
+output_dir: "./outputs"
+"""
+        yaml_path = tmp_path / "train.yaml"
+        yaml_path.write_text(yaml_content)
+
+        with pytest.raises(ValueError, match="Unknown operation"):
+            TrainConfig.from_yaml(yaml_path)

@@ -32,8 +32,14 @@ class TrainConfig:
 
     Parameters
     ----------
-    circuit_dir : Path
-        Directory containing committed ``.stim`` circuit files.
+    operation : str
+        Operation name, resolved to an ``OperationProfile`` at
+        construction.  Determines the circuit root, representation, and
+        run-directory segment.
+    circuit_dir : Path or None
+        Directory containing committed ``.stim`` circuit files.  If
+        ``None`` (default), populated from the resolved profile's
+        ``circuit_root``.
     output_dir : Path
         Directory for checkpoints and logs.
     hidden_dim : int
@@ -73,7 +79,7 @@ class TrainConfig:
         and cannot train, since its kernels register no autograd backward.
     compile_mode : str
         ``torch.compile`` mode (only used when backend is ``"compiled"``).
-        Use ``"default"`` for training — GNN batches have dynamic shapes
+        Use ``"default"`` for training - GNN batches have dynamic shapes
         (variable N/E) which cause ``"reduce-overhead"`` to record
         excessive CUDA graphs and degrade performance over time.
     amp_dtype : str
@@ -92,7 +98,8 @@ class TrainConfig:
         Attach physical error probability as a graph-level feature.
     """
 
-    circuit_dir: Path = Path("data/circuits")
+    operation: str = "memory"
+    circuit_dir: Path | None = None
     output_dir: Path = Path("outputs/runs")
     hidden_dim: int = 64
     num_layers: int = 4
@@ -125,6 +132,7 @@ class TrainConfig:
         flat: dict[str, Any] = {}
 
         for key in (
+            "operation",
             "circuit_dir",
             "output_dir",
             "num_workers",
@@ -161,6 +169,13 @@ class TrainConfig:
         return cls(**flat)
 
     def __post_init__(self) -> None:
+        from sampling.profile import resolve_profile
+
+        profile = resolve_profile(self.operation)
+
+        if self.circuit_dir is None:
+            self.circuit_dir = profile.circuit_root
+
         if self.sample_budget < 1:
             raise ValueError(f"sample_budget must be >= 1, got {self.sample_budget}")
         if self.val_interval_samples < 1:
@@ -230,7 +245,7 @@ class CurriculumConfig:
     ----------
     stages : tuple of CurriculumStage
         Curriculum stages in order.  Each stage extends the active
-        distance set — once a distance enters, it never leaves.
+        distance set - once a distance enters, it never leaves.
     mwpm_ler : dict mapping distance to float
         Baseline MWPM LER per distance (average across p values on the
         eval sets).  Used to compute the LER gap that drives adaptive

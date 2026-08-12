@@ -25,7 +25,7 @@ class TestFocalBCEWithLogitsLoss:
         self,
         focal: FocalBCEWithLogitsLoss,
     ) -> None:
-        """Confident correct positive prediction → near-zero loss."""
+        """Confident correct positive prediction => near-zero loss."""
         loss = focal(torch.full((10,), 10.0), torch.ones(10))
         assert loss.item() < 1e-4
 
@@ -33,7 +33,7 @@ class TestFocalBCEWithLogitsLoss:
         self,
         focal: FocalBCEWithLogitsLoss,
     ) -> None:
-        """Confident correct negative prediction → near-zero loss."""
+        """Confident correct negative prediction => near-zero loss."""
         loss = focal(torch.full((10,), -10.0), torch.zeros(10))
         assert loss.item() < 1e-4
 

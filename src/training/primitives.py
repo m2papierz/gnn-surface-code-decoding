@@ -27,6 +27,7 @@ from torch_geometric.loader import DataLoader
 
 from model.dataset import StreamingSurfaceCodeDataset
 from model.decoder import QECDecoder, build_model
+from sampling.representation import DataContract
 from sampling.sampler import CircuitSetting
 from training.config import TrainConfig
 from training.loss import build_criterion
@@ -72,11 +73,45 @@ class TrainingState:
     max_grad_norm: float
 
 
+def resolve_run_dir(
+    output_dir: Path,
+    operation: str,
+    distances: list[int] | tuple[int, ...] | None,
+    strategy: str,
+) -> Path:
+    """Compute the run directory from operation, distances, and strategy.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Base output directory (e.g. ``outputs/runs``).
+    operation : str
+        Operation name, resolved to a profile for the run-directory segment.
+    distances : list or tuple of int, or None
+        Active code distances.  A single distance produces ``d{n}``; multiple
+        or ``None`` (all) produces ``mixed``.
+    strategy : str
+        Training strategy label (e.g. ``"direct"``, ``"curriculum"``).
+
+    Returns
+    -------
+    Path
+        ``output_dir / <operation> / <distance_segment> / <strategy>``.
+    """
+    from sampling.profile import resolve_profile
+
+    profile = resolve_profile(operation)
+    if distances is not None and len(distances) == 1:
+        distance_segment = f"d{distances[0]}"
+    else:
+        distance_segment = "mixed"
+    return output_dir / profile.run_dir_segment / distance_segment / strategy
+
+
 def build_training_state(
     cfg: TrainConfig,
     *,
-    node_dim: int,
-    edge_dim: int,
+    contract: DataContract,
     total_budget: int,
     device: torch.device,
 ) -> TrainingState:
@@ -86,10 +121,8 @@ def build_training_state(
     ----------
     cfg : TrainConfig
         Training hyperparameters.
-    node_dim : int
-        Input node feature dimension.
-    edge_dim : int
-        Input edge feature dimension.
+    contract : DataContract
+        Representation descriptor and label spec.
     total_budget : int
         Total sample budget (drives scheduler parameterization).
     device : torch.device
@@ -104,10 +137,11 @@ def build_training_state(
     set_backend(cfg.backend)
 
     model = build_model(
-        node_dim=node_dim,
-        edge_dim=edge_dim,
+        node_dim=contract.node_dim,
+        edge_dim=contract.edge_dim,
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,
+        num_observables=contract.num_observables,
         dropout=cfg.dropout,
     ).to(device)
 
@@ -328,8 +362,7 @@ def write_checkpoint(
     samples_consumed: int,
     best_metric: float,
     decision_threshold: float,
-    node_dim: int,
-    edge_dim: int,
+    contract: DataContract,
     cfg: TrainConfig,
     extra: dict[str, Any] | None = None,
 ) -> None:
@@ -347,8 +380,8 @@ def write_checkpoint(
         Best validation metric achieved.
     decision_threshold : float
         Decision threshold for inference.
-    node_dim, edge_dim : int
-        Feature dimensions (persisted for resume compatibility).
+    contract : DataContract
+        Representation and label contract (persisted in checkpoint).
     cfg : TrainConfig
         Training config (persisted in checkpoint).
     extra : dict, optional
@@ -357,8 +390,9 @@ def write_checkpoint(
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     config_dict = asdict(cfg)
-    config_dict["node_dim"] = node_dim
-    config_dict["edge_dim"] = edge_dim
+    config_dict["contract"] = contract.to_dict()
+    config_dict["node_dim"] = contract.node_dim
+    config_dict["edge_dim"] = contract.edge_dim
 
     ckpt: dict[str, Any] = {
         "samples_consumed": samples_consumed,
@@ -380,6 +414,7 @@ def load_checkpoint(
     cfg: TrainConfig,
     *,
     restore_optimizer: bool = True,
+    contract: DataContract | None = None,
 ) -> dict[str, Any]:
     """Load a checkpoint and restore training state.
 
@@ -394,6 +429,8 @@ def load_checkpoint(
     restore_optimizer : bool
         If ``True`` (default), restore optimizer and scheduler state.
         Set to ``False`` for warm-start (model weights only).
+    contract : DataContract, optional
+        If provided, the checkpoint's contract is validated against it.
 
     Returns
     -------
@@ -401,13 +438,6 @@ def load_checkpoint(
         The raw checkpoint dict (callers extract counters).
     """
     ckpt = torch.load(path, weights_only=False)
-    state.model.load_state_dict(ckpt["model_state_dict"])
-
-    if restore_optimizer:
-        if "optimizer_state_dict" in ckpt:
-            state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        if "scheduler_state_dict" in ckpt:
-            state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
 
     ckpt_cfg = ckpt.get("config", {})
     for key in ("hidden_dim", "num_layers"):
@@ -418,6 +448,39 @@ def load_checkpoint(
                 f"Config mismatch on resume: {key}={current}, "
                 f"checkpoint has {key}={saved}"
             )
+
+    if contract is not None:
+        saved_contract = DataContract.from_checkpoint_config(ckpt_cfg)
+        if saved_contract.version != contract.version:
+            raise ValueError(
+                f"Representation mismatch on resume: current version "
+                f"{contract.version!r}, checkpoint has "
+                f"{saved_contract.version!r}"
+            )
+        if (
+            saved_contract.node_dim != contract.node_dim
+            or saved_contract.edge_dim != contract.edge_dim
+        ):
+            raise ValueError(
+                f"Dimension mismatch on resume: current "
+                f"({contract.node_dim}, {contract.edge_dim}), "
+                f"checkpoint has ({saved_contract.node_dim}, "
+                f"{saved_contract.edge_dim})"
+            )
+        if saved_contract.num_observables != contract.num_observables:
+            raise ValueError(
+                f"Observable count mismatch on resume: current "
+                f"{contract.num_observables}, checkpoint has "
+                f"{saved_contract.num_observables}"
+            )
+
+    state.model.load_state_dict(ckpt["model_state_dict"])
+
+    if restore_optimizer:
+        if "optimizer_state_dict" in ckpt:
+            state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
 
     return ckpt
 
@@ -446,11 +509,16 @@ def make_streaming_loader(
     -------
     DataLoader
     """
+    from sampling.profile import resolve_profile
+
+    profile = resolve_profile(cfg.operation)
     ds = StreamingSurfaceCodeDataset(
         settings=settings,
         master_seed=cfg.seed,
         include_p_feature=cfg.include_p_feature,
         distance_weights=distance_weights,
+        contract=profile.data_contract,
+        metadata_extractor=profile.metadata_extractor,
     )
     pin = device.type == "cuda"
     persistent = cfg.num_workers > 0
@@ -463,6 +531,46 @@ def make_streaming_loader(
         persistent_workers=persistent,
         prefetch_factor=prefetch,
     )
+
+
+def make_frozen_val_samples(
+    settings: list[CircuitSetting],
+    cfg: TrainConfig,
+    val_size: int,
+    *,
+    master_seed: int,
+) -> list[Any]:
+    """Sample a frozen validation set using the operation's data contract.
+
+    Parameters
+    ----------
+    settings : list of CircuitSetting
+        Circuit settings to sample from.
+    cfg : TrainConfig
+        Training config (operation, include_p_feature, etc.).
+    val_size : int
+        Number of samples to freeze.
+    master_seed : int
+        Deterministic seed for the validation stream.
+
+    Returns
+    -------
+    list
+        Frozen list of PyG ``Data`` objects.
+    """
+    import itertools
+
+    from sampling.profile import resolve_profile
+
+    profile = resolve_profile(cfg.operation)
+    ds = StreamingSurfaceCodeDataset(
+        settings=settings,
+        master_seed=master_seed,
+        include_p_feature=cfg.include_p_feature,
+        contract=profile.data_contract,
+        metadata_extractor=profile.metadata_extractor,
+    )
+    return list(itertools.islice(ds, val_size))
 
 
 def format_metrics(metrics: dict[str, float]) -> str:

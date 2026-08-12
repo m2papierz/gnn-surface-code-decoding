@@ -9,7 +9,6 @@ re-measured every ``gap_eval_interval`` training samples.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 import time
@@ -21,7 +20,7 @@ from typing import Any
 import torch
 from torch_geometric.loader import DataLoader
 
-from model.dataset import StreamingSurfaceCodeDataset
+from sampling.representation import DataContract
 from sampling.sampler import CircuitSetting, settings_from_circuit_dir
 from sampling.seeding import stable_seed
 from training.config import (
@@ -36,7 +35,9 @@ from training.primitives import (
     compute_val_metrics,
     format_metrics,
     load_checkpoint,
+    make_frozen_val_samples,
     make_streaming_loader,
+    resolve_run_dir,
     sweep_threshold,
     train_step,
     write_checkpoint,
@@ -59,7 +60,7 @@ class CurriculumTrainer:
     ----------
     cfg : TrainConfig
         Base training hyperparameters (model, optimizer, etc.).
-        ``sample_budget`` is ignored — the total budget is the sum of
+        ``sample_budget`` is ignored - the total budget is the sum of
         stage budgets from ``curriculum``.
     curriculum : CurriculumConfig
         Curriculum stages and gap-measurement parameters.
@@ -77,8 +78,7 @@ class CurriculumTrainer:
         self.stage_history: list[dict[str, Any]] = []
 
         self._state: TrainingState
-        self._node_dim: int
-        self._edge_dim: int
+        self._contract: DataContract
         self._run_dir: Path
         self._best_path: Path
         self._stopped_early: bool = False
@@ -91,8 +91,6 @@ class CurriculumTrainer:
     def total_budget(self) -> int:
         """Total sample budget across all curriculum stages."""
         return self.curriculum.total_budget
-
-    # -- Data setup (curriculum-specific) ------------------------------------
 
     def _setup_per_distance_val_sets(self) -> None:
         """Pre-sample frozen per-distance validation sets for gap measurement."""
@@ -109,13 +107,11 @@ class CurriculumTrainer:
                 )
 
             val_seed = stable_seed("curriculum_val", f"d={d}", base=self.cfg.seed)
-            val_ds = StreamingSurfaceCodeDataset(
-                settings=d_settings,
+            self._per_distance_val[d] = make_frozen_val_samples(
+                d_settings,
+                self.cfg,
+                self.curriculum.val_size_per_distance,
                 master_seed=val_seed,
-                include_p_feature=self.cfg.include_p_feature,
-            )
-            self._per_distance_val[d] = list(
-                itertools.islice(val_ds, self.curriculum.val_size_per_distance)
             )
 
         logger.info(
@@ -145,8 +141,6 @@ class CurriculumTrainer:
                     shuffle=False,
                     num_workers=0,
                 )
-
-    # -- Gap measurement and weight computation ------------------------------
 
     @torch.no_grad()
     def _measure_per_distance_ler(self, distances: tuple[int, ...]) -> dict[int, float]:
@@ -208,8 +202,6 @@ class CurriculumTrainer:
         total_raw = sum(raw.values())
         return {d: w / total_raw for d, w in raw.items()}
 
-    # -- DataLoader factory --------------------------------------------------
-
     def _make_train_loader(
         self,
         distances: tuple[int, ...],
@@ -223,15 +215,14 @@ class CurriculumTrainer:
             distance_weights=self._distance_weights or None,
         )
 
-    # -- Config persistence --------------------------------------------------
-
     def _save_config(self) -> None:
         config_dict = asdict(self.cfg)
         config_dict["circuit_dir"] = str(self.cfg.circuit_dir)
         config_dict["output_dir"] = str(self.cfg.output_dir)
         config_dict["resume"] = str(self.cfg.resume) if self.cfg.resume else None
-        config_dict["node_dim"] = self._node_dim
-        config_dict["edge_dim"] = self._edge_dim
+        config_dict["contract"] = self._contract.to_dict()
+        config_dict["node_dim"] = self._contract.node_dim
+        config_dict["edge_dim"] = self._contract.edge_dim
         config_dict["curriculum"] = {
             "stages": [
                 {"distances": list(s.distances), "budget": s.budget}
@@ -246,8 +237,6 @@ class CurriculumTrainer:
 
         path = self._run_dir / "config.json"
         path.write_text(json.dumps(config_dict, indent=2), encoding="utf-8")
-
-    # -- Stage execution -----------------------------------------------------
 
     def _run_stage(self, stage_idx: int, stage: CurriculumStage) -> None:
         """Execute a single curriculum stage."""
@@ -339,8 +328,7 @@ class CurriculumTrainer:
                     samples_consumed=self.samples_consumed,
                     best_metric=self.best_metric,
                     decision_threshold=self._decision_threshold,
-                    node_dim=self._node_dim,
-                    edge_dim=self._edge_dim,
+                    contract=self._contract,
                     cfg=self.cfg,
                     extra={
                         "curriculum_stage": stage_idx,
@@ -419,8 +407,6 @@ class CurriculumTrainer:
             stage.budget,
         )
 
-    # -- Main entry point ----------------------------------------------------
-
     def fit(self) -> Path:
         """Execute curriculum training.
 
@@ -432,22 +418,22 @@ class CurriculumTrainer:
         seed_everything(self.cfg.seed)
         logger.info("Device: %s", self.device)
 
-        self._run_dir = self.cfg.output_dir / "curriculum"
+        self._run_dir = resolve_run_dir(
+            self.cfg.output_dir, self.cfg.operation, None, "curriculum"
+        )
         self._run_dir.mkdir(parents=True, exist_ok=True)
         self._best_path = self._run_dir / "best.pt"
 
         self._all_settings = settings_from_circuit_dir(self.cfg.circuit_dir)
-        probe_ds = StreamingSurfaceCodeDataset(
-            settings=self._all_settings[:1],
-            master_seed=0,
-        )
-        self._node_dim = probe_ds.node_dim
-        self._edge_dim = probe_ds.edge_dim
+
+        from sampling.profile import resolve_profile
+
+        profile = resolve_profile(self.cfg.operation)
+        self._contract = profile.data_contract
 
         self._state = build_training_state(
             self.cfg,
-            node_dim=self._node_dim,
-            edge_dim=self._edge_dim,
+            contract=self._contract,
             total_budget=self.total_budget,
             device=self.device,
         )
@@ -458,6 +444,7 @@ class CurriculumTrainer:
                 self._state,
                 self.cfg,
                 restore_optimizer=False,
+                contract=self._contract,
             )
             logger.info("Warm-started model from %s", self.cfg.resume)
 
@@ -510,8 +497,7 @@ class CurriculumTrainer:
                 samples_consumed=ckpt["samples_consumed"],
                 best_metric=self.best_metric,
                 decision_threshold=self._decision_threshold,
-                node_dim=self._node_dim,
-                edge_dim=self._edge_dim,
+                contract=self._contract,
                 cfg=self.cfg,
                 extra={
                     "curriculum_stage": ckpt.get("curriculum_stage", -1),

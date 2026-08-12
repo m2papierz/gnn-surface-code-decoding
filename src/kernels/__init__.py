@@ -1,6 +1,6 @@
 """Custom CUDA kernels for the GNN-QEC inference fast path.
 
-Forward-pass only — none of these ops implements an autograd backward, so
+Forward-pass only - none of these ops implements an autograd backward, so
 reaching one from a training path yields silently wrong gradients.
 
 - ``fused_edge_update``: gather, symmetric combine and GEMM in one launch,

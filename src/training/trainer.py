@@ -7,7 +7,6 @@ and persisted in saved checkpoints.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 import time
@@ -18,7 +17,7 @@ from typing import Any
 import torch
 from torch_geometric.loader import DataLoader
 
-from model.dataset import StreamingSurfaceCodeDataset
+from sampling.representation import DataContract
 from sampling.sampler import settings_from_circuit_dir
 from sampling.seeding import stable_seed
 from training.config import TrainConfig, seed_everything
@@ -28,7 +27,9 @@ from training.primitives import (
     compute_val_metrics,
     format_metrics,
     load_checkpoint,
+    make_frozen_val_samples,
     make_streaming_loader,
+    resolve_run_dir,
     sweep_threshold,
     train_step,
     write_checkpoint,
@@ -70,8 +71,7 @@ class Trainer:
         self.history: list[dict[str, Any]] = []
 
         self._state: TrainingState
-        self._node_dim: int
-        self._edge_dim: int
+        self._contract: DataContract
         self._run_dir: Path
         self._best_path: Path
 
@@ -84,16 +84,12 @@ class Trainer:
         self.train_loader = make_streaming_loader(settings, self.cfg, self.device)
 
         train_ds = self.train_loader.dataset
-        self._node_dim = train_ds.node_dim  # type: ignore[union-attr]
-        self._edge_dim = train_ds.edge_dim  # type: ignore[union-attr]
+        self._contract = train_ds.contract  # type: ignore[union-attr]
 
         val_seed = stable_seed("val", f"seed={self.cfg.seed}", base=self.cfg.seed)
-        val_ds = StreamingSurfaceCodeDataset(
-            settings=settings,
-            master_seed=val_seed,
-            include_p_feature=self.cfg.include_p_feature,
+        val_samples = make_frozen_val_samples(
+            settings, self.cfg, self.cfg.val_size, master_seed=val_seed
         )
-        val_samples = list(itertools.islice(val_ds, self.cfg.val_size))
         self.val_loader = DataLoader(
             val_samples,
             batch_size=self.cfg.batch_size,
@@ -112,7 +108,9 @@ class Trainer:
         """Restore training state from checkpoint if configured."""
         if self.cfg.resume is None:
             return
-        ckpt = load_checkpoint(self.cfg.resume, self._state, self.cfg)
+        ckpt = load_checkpoint(
+            self.cfg.resume, self._state, self.cfg, contract=self._contract
+        )
         self.samples_consumed = ckpt.get("samples_consumed", 0)
         self.best_metric = ckpt.get("best_metric", float("inf"))
         self._decision_threshold = ckpt.get("decision_threshold", 0.0)
@@ -129,8 +127,9 @@ class Trainer:
         config_dict["circuit_dir"] = str(self.cfg.circuit_dir)
         config_dict["output_dir"] = str(self.cfg.output_dir)
         config_dict["resume"] = str(self.cfg.resume) if self.cfg.resume else None
-        config_dict["node_dim"] = self._node_dim
-        config_dict["edge_dim"] = self._edge_dim
+        config_dict["contract"] = self._contract.to_dict()
+        config_dict["node_dim"] = self._contract.node_dim
+        config_dict["edge_dim"] = self._contract.edge_dim
         config_dict["distances"] = self.cfg.distances
 
         path = self._run_dir / "config.json"
@@ -176,8 +175,7 @@ class Trainer:
             samples_consumed=samples_consumed,
             best_metric=best_metric,
             decision_threshold=self._decision_threshold,
-            node_dim=self._node_dim,
-            edge_dim=self._edge_dim,
+            contract=self._contract,
             cfg=self.cfg,
         )
         logger.debug("Saved checkpoint to %s (samples=%d)", path, samples_consumed)
@@ -199,15 +197,16 @@ class Trainer:
         seed_everything(self.cfg.seed)
         logger.info("Device: %s", self.device)
 
-        self._run_dir = self.cfg.output_dir / "direct"
+        self._run_dir = resolve_run_dir(
+            self.cfg.output_dir, self.cfg.operation, self.cfg.distances, "direct"
+        )
         self._run_dir.mkdir(parents=True, exist_ok=True)
         self._best_path = self._run_dir / "best.pt"
 
         self._setup_data()
         self._state = build_training_state(
             self.cfg,
-            node_dim=self._node_dim,
-            edge_dim=self._edge_dim,
+            contract=self._contract,
             total_budget=self.cfg.sample_budget,
             device=self.device,
         )

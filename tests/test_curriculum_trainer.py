@@ -77,17 +77,7 @@ def _make_curriculum_config(**overrides):
     return CurriculumConfig(**defaults)
 
 
-# ---------------------------------------------------------------------------
-# CurriculumStage validation
-# ---------------------------------------------------------------------------
-
-
 class TestCurriculumStage:
-    def test_valid_stage(self) -> None:
-        stage = CurriculumStage(distances=(3, 5), budget=1000)
-        assert stage.distances == (3, 5)
-        assert stage.budget == 1000
-
     def test_empty_distances_rejected(self) -> None:
         with pytest.raises(ValueError, match="at least one distance"):
             CurriculumStage(distances=(), budget=1000)
@@ -95,11 +85,6 @@ class TestCurriculumStage:
     def test_zero_budget_rejected(self) -> None:
         with pytest.raises(ValueError, match="budget must be >= 1"):
             CurriculumStage(distances=(3,), budget=0)
-
-
-# ---------------------------------------------------------------------------
-# CurriculumConfig validation
-# ---------------------------------------------------------------------------
 
 
 class TestCurriculumConfig:
@@ -156,11 +141,6 @@ class TestCurriculumConfig:
         assert cfg.gap_eval_interval == 200
 
 
-# ---------------------------------------------------------------------------
-# Weighted sampling in WorkerSampler
-# ---------------------------------------------------------------------------
-
-
 class TestWeightedSampling:
     def test_uniform_when_no_weights(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
@@ -191,11 +171,6 @@ class TestWeightedSampling:
         settings = settings_from_circuit_dir(circuit_dir)
         with pytest.raises(ValueError, match="positive value"):
             WorkerSampler(settings, worker_seed=42, weights=np.zeros(len(settings)))
-
-
-# ---------------------------------------------------------------------------
-# CurriculumTrainer smoke tests
-# ---------------------------------------------------------------------------
 
 
 class TestCurriculumTrainerSmoke:
@@ -249,12 +224,13 @@ class TestCurriculumTrainerSmoke:
         trainer = CurriculumTrainer(cfg, curriculum)
         trainer.fit()
 
-        history_path = tmp_path / "out" / "curriculum" / "history.json"
+        run = tmp_path / "out" / "memory" / "mixed" / "curriculum"
+        history_path = run / "history.json"
         assert history_path.exists()
         history = json.loads(history_path.read_text())
         assert len(history) >= 2
 
-        stage_path = tmp_path / "out" / "curriculum" / "stage_history.json"
+        stage_path = run / "stage_history.json"
         assert stage_path.exists()
         stages = json.loads(stage_path.read_text())
         assert len(stages) == 2
@@ -265,17 +241,13 @@ class TestCurriculumTrainerSmoke:
         trainer = CurriculumTrainer(cfg, curriculum)
         trainer.fit()
 
-        config_path = tmp_path / "out" / "curriculum" / "config.json"
+        run = tmp_path / "out" / "memory" / "mixed" / "curriculum"
+        config_path = run / "config.json"
         assert config_path.exists()
         saved = json.loads(config_path.read_text())
         assert "curriculum" in saved
         assert len(saved["curriculum"]["stages"]) == 2
         assert saved["curriculum"]["total_budget"] == 1000
-
-
-# ---------------------------------------------------------------------------
-# Stage transitions
-# ---------------------------------------------------------------------------
 
 
 class TestStageTransitions:
@@ -308,11 +280,6 @@ class TestStageTransitions:
         assert trainer.samples_consumed >= 1000
 
 
-# ---------------------------------------------------------------------------
-# Weight computation
-# ---------------------------------------------------------------------------
-
-
 class TestWeightComputation:
     def test_weights_sum_to_one(self, circuit_dir, tmp_path) -> None:
         cfg = _make_train_config(circuit_dir, tmp_path / "out")
@@ -338,11 +305,6 @@ class TestWeightComputation:
         if len(weights) > 1:
             values = list(weights.values())
             assert abs(values[0] - values[1]) < 0.3
-
-
-# ---------------------------------------------------------------------------
-# Early stopping
-# ---------------------------------------------------------------------------
 
 
 class TestCurriculumEarlyStopping:
