@@ -1,20 +1,21 @@
 # Custom CUDA Kernels
 
-Fused CUDA kernels for the GNN encoder and loss computation, targeting NVIDIA Ampere (sm_80) and Ada Lovelace (sm_89) architectures.
+Fused CUDA kernels for the GNN encoder and graph construction, targeting NVIDIA Ampere (sm_80) and Ada Lovelace (sm_89) architectures.
 
 ## Kernels
 
 | Kernel | Replaces | Key optimisation |
 |--------|----------|------------------|
-| `fused_edge_features` | 2x gather + add + sub+abs + concat (5 launches => 1) | Template-dispatched float4 vectorised loads |
+| `fused_edge_update` | Materialise-then-GEMM: gather + concat (E, 3H) + matmul => single launch | Algebraic split: node-side term via cuBLAS on (N, H), edge-side GEMM with K=2H in registers |
 | `fused_norm_residual` | LayerNorm + Dropout + residual add (3 launches => 1) | 2-pass fused stats (sum+sum_sq), shared gamma/beta cache, template dropout elimination |
-| `graph_norm_bce` | BCE + scatter_add + normalize (3 launches => 2) | Warp-cooperative segmented prefix sum (64× fewer atomicAdd vs naive scatter) |
+| `fired_detector_node_features` | CPU graph construction per shot | Compacted fired detectors => (N, 6) node features on device |
+| `fired_detector_edges` | CPU all-pairs edge construction | Node features => all-pairs (2, E) edge index + (E, 6) edge features on device |
 
 ## Prerequisites
 
-- CUDA Toolkit ≥ 12.0
-- PyTorch ≥ 2.5 with CUDA support
-- A GPU with compute capability ≥ 8.0 (Ampere or newer)
+- CUDA Toolkit >= 12.0
+- PyTorch >= 2.5 with CUDA support
+- A GPU with compute capability >= 8.0 (Ampere or newer)
 
 ## Build
 
@@ -56,8 +57,8 @@ set_backend("cuda")  # inference only - no autograd backward
 Or via environment variable:
 
 ```bash
-QECDEC_BACKEND=cuda uv run scripts/eval_harness.py \
-    --checkpoint outputs/runs/direct/best.pt
+QECDEC_BACKEND=cuda uv run scripts/eval_gnn.py \
+    -c configs/eval_memory_d3_direct.yaml
 ```
 
 Or in benchmarking:
@@ -85,30 +86,26 @@ Tests are automatically skipped without a GPU or without built kernels.
 
 ## Architecture notes
 
-### `fused_edge_features`
+### `fused_edge_update`
 
-One thread-block per edge, each block processes one edge's hidden dimension.
+Algebraic decomposition eliminates the (E, 3H) concat buffer entirely.  `W·[a|b|c] = W_sum·a + W_diff·b + W_edge·c` where the symmetric `W_sum·(h_src + h_dst)` moves off edges onto nodes via a single cuBLAS call on (N, H).  The per-edge kernel then GEMMs with K=2H (|h_src - h_dst| and edge embedding) and adds the node-side term in the epilogue.
 
 - **Template dispatch**: `<bool UseVec4>` selected at compile time - float4 vectorised path (when `hidden_dim % 4 == 0`) or scalar fallback, with zero branch cost in the hot loop.
 - **`__launch_bounds__(256)`** for register allocation hints.
-- High parallelism from massive block count (batch×edges ≈ 100k+ blocks), not from wide blocks.
+- High parallelism from massive block count (batch x edges), not from wide blocks.
 
 ### `fused_norm_residual`
 
 One thread-block per row (node or edge embedding).
 
-- **2-pass instead of 3**: mean and variance computed together via `sum + sum_sq` in a single read of the input row, then `var = E[x²] - E[x]²`. Saves ~14% bandwidth vs the naive mean-then-variance approach. Numerically sufficient for float32 at `hidden_dim ≤ 512` (verified: max error 2.4e-7 vs Welford gold standard).
+- **2-pass instead of 3**: mean and variance computed together via `sum + sum_sq` in a single read of the input row, then `var = E[x^2] - E[x]^2`. Saves ~14% bandwidth vs the naive mean-then-variance approach. Numerically sufficient for float32 at `hidden_dim <= 512` (verified: max error 2.4e-7 vs Welford gold standard).
 - **Shared memory cache** for gamma/beta vectors - loaded cooperatively once per block, eliminating repeated global reads in the normalise+scale pass.
 - **Template `<bool Training>`**: inference path compiled without curand state allocation (~40 registers freed), dropout branch, or scale computation.
 - **Reproducible seed** from PyTorch's default CUDA generator (`at::cuda::detail::getDefaultCUDAGenerator()`) instead of non-deterministic `steady_clock::now()`.
 
-### `graph_norm_bce`
+### `fired_detector_node_features` / `fired_detector_edges`
 
-Two-kernel pipeline: scatter (BCE => per-graph accumulators) then reduce (mean-of-means).
-
-- **Warp-cooperative segmented prefix sum**: exploits the fact that PyG `Batch` produces sorted (monotonic) `edge_graph` indices. Within each warp of 32 threads, edges from the same graph form contiguous segments. `__shfl_up_sync` with graph-ID equality check accumulates BCE values within each segment; only the segment-end lane emits a single `atomicAdd`. Result: **~32× fewer atomics** than per-thread scatter.
-- **Precomputed graph counts**: `torch::bincount(edge_graph)` replaces the second set of `atomicAdd` for counting edges. Combined: **~64× fewer atomics** than the original (verified: d=7 batch=128 => 797k => 12k atomicAdd).
-- Boundary handling: warps that straddle graph boundaries correctly emit separate atomics per segment (at most 2 per warp).
+Batched graph construction reproducing `sampling.graph.build_fired_detector_graph` on device.  Both kernels write into caller-owned output buffers addressed through per-shot prefix sums, enabling the full syndrome-to-graph pipeline without host round-trips.
 
 ### Common
 
@@ -122,13 +119,14 @@ All kernels use:
 
 ```
 src/kernels/
-├── README.md
 ├── __init__.py          # AVAILABLE flag
 ├── ops.py               # Python wrappers (fallback to PyTorch on CPU)
 ├── build.py             # JIT build config
+├── bucketed.py          # Bucketed CUDA-Graphs fast path
+├── graph_build.py       # Python wrapper for graph construction kernels
 └── cpp/
-    ├── fused_edge_features.cu   # Kernel #1
-    ├── fused_norm_residual.cu   # Kernel #2
-    ├── graph_norm_bce.cu        # Kernel #3
+    ├── fused_edge_update.cu     # Fused gather + symmetric combine + GEMM
+    ├── fused_norm_residual.cu   # Fused LayerNorm + residual + dropout
+    ├── graph_build.cu           # Batched fired-detector graph construction
     └── bindings.cpp             # pybind11 => kernels._C
 ```
