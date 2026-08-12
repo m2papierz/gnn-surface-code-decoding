@@ -19,123 +19,35 @@ from sampling.graph import (
 from sampling.sampler import CircuitSetting, WorkerSampler, settings_from_circuit_dir
 
 
-def undirected_edges(edge_index: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Extract unique undirected edges and mapping from directed edges."""
-    src, dst = edge_index[0], edge_index[1]
-    pairs = np.stack([np.minimum(src, dst), np.maximum(src, dst)], axis=1)
-    unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
-    return unique.astype(np.int64), inverse.astype(np.int64)
-
-
-class TestUndirectedEdges:
-    """Mapping from directed COO edges to unique undirected pairs."""
-
-    def test_simple_bidirectional(self) -> None:
-        """Two directed edges (0=>1, 1=>0) collapse to one undirected."""
-        ei = np.array([[0, 1], [1, 0]], dtype=np.int64)
-        pairs, mapping = undirected_edges(ei)
-
-        assert pairs.shape == (1, 2)
-        np.testing.assert_array_equal(pairs[0], [0, 1])
-        np.testing.assert_array_equal(mapping, [0, 0])
-
-    def test_multiple_edges(self) -> None:
-        """Four directed edges from two undirected edges."""
-        ei = np.array([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=np.int64)
-        pairs, mapping = undirected_edges(ei)
-
-        assert pairs.shape == (2, 2)
-        assert mapping.shape == (4,)
-        # Both directions of an edge map to same undirected index
-        assert mapping[0] == mapping[1]  # 0 <-> 1
-        assert mapping[2] == mapping[3]  # 1 <-> 2
-        assert mapping[0] != mapping[2]  # different edges
-
-    def test_canonical_ordering(self) -> None:
-        """Undirected pairs always have smaller node first."""
-        ei = np.array([[5, 3, 3, 5], [3, 5, 5, 3]], dtype=np.int64)
-        pairs, _ = undirected_edges(ei)
-
-        assert pairs.shape == (1, 2)
-        assert pairs[0, 0] < pairs[0, 1]
-
-    def test_self_loop(self) -> None:
-        """Self-loops collapse to a single undirected edge."""
-        ei = np.array([[2, 2], [2, 2]], dtype=np.int64)
-        pairs, mapping = undirected_edges(ei)
-
-        assert pairs.shape == (1, 2)
-        np.testing.assert_array_equal(pairs[0], [2, 2])
-        np.testing.assert_array_equal(mapping, [0, 0])
-
-    def test_empty(self) -> None:
-        """Zero edges => empty output."""
-        ei = np.zeros((2, 0), dtype=np.int64)
-        pairs, mapping = undirected_edges(ei)
-
-        assert pairs.shape[0] == 0
-        assert mapping.shape[0] == 0
-
-    def test_dtypes(self) -> None:
-        """Output dtypes are int64."""
-        ei = np.array([[0, 1], [1, 0]], dtype=np.int32)
-        pairs, mapping = undirected_edges(ei)
-
-        assert pairs.dtype == np.int64
-        assert mapping.dtype == np.int64
-
-    def test_roundtrip_with_edge_attr(self) -> None:
-        """Mapping correctly indexes undirected attributes back to directed."""
-        ei = np.array([[0, 1, 1, 2, 2, 0], [1, 0, 2, 1, 0, 2]], dtype=np.int64)
-        pairs, d2u = undirected_edges(ei)
-
-        # Simulate per-undirected-edge weights
-        und_weights = np.array([0.1, 0.2, 0.3])
-        assert und_weights.shape[0] == pairs.shape[0]
-
-        # Expand back to directed: both directions get same weight
-        dir_weights = und_weights[d2u]
-        assert dir_weights.shape[0] == 6
-        # Edge 0=>1 and 1=>0 must have same weight
-        assert dir_weights[0] == dir_weights[1]
-        assert dir_weights[2] == dir_weights[3]
-        assert dir_weights[4] == dir_weights[5]
-
-
-# -----------------------------------------------------------------------
-# Fired-detector complete graph
-# -----------------------------------------------------------------------
-
-
 def _make_metadata(coords: np.ndarray, distance: int, rounds: int) -> CircuitMetadata:
     """Build synthetic CircuitMetadata for testing without Stim."""
+    n = coords.shape[0]
     return CircuitMetadata(
         detector_coords=coords.astype(np.float64),
         distance=distance,
         rounds=rounds,
-        num_detectors=coords.shape[0],
+        num_detectors=n,
+        dem_edge_weights=np.zeros((n, n), dtype=np.float64),
     )
 
 
 class TestFiredDetectorGraph:
-    """Fired-detector graph builder: fired detectors → complete graph."""
+    """Fired-detector graph builder: fired detectors => complete graph."""
 
     @pytest.fixture
     def d3_metadata(self) -> CircuitMetadata:
-        c = stim.Circuit.from_file("data/circuits/d3_r3_p0_01.stim")
+        c = stim.Circuit.from_file("data/circuits/memory/d3_r3_p0_01.stim")
         return extract_circuit_metadata(c, distance=3, rounds=3)
 
     @pytest.fixture
     def d5_metadata(self) -> CircuitMetadata:
-        c = stim.Circuit.from_file("data/circuits/d5_r5_p0_01.stim")
+        c = stim.Circuit.from_file("data/circuits/memory/d5_r5_p0_01.stim")
         return extract_circuit_metadata(c, distance=5, rounds=5)
 
     @pytest.fixture
     def d7_metadata(self) -> CircuitMetadata:
-        c = stim.Circuit.from_file("data/circuits/d7_r7_p0_01.stim")
+        c = stim.Circuit.from_file("data/circuits/memory/d7_r7_p0_01.stim")
         return extract_circuit_metadata(c, distance=7, rounds=7)
-
-    # -- Empty syndrome --
 
     def test_empty_syndrome_returns_zero_nodes(
         self, d3_metadata: CircuitMetadata
@@ -149,8 +61,6 @@ class TestFiredDetectorGraph:
         assert g.edge_features.shape == (0, EDGE_DIM)
         assert g.fired_indices.shape == (0,)
 
-    # -- Single fired detector --
-
     def test_single_fired_no_edges(self, d3_metadata: CircuitMetadata) -> None:
         syndrome = np.zeros(d3_metadata.num_detectors, dtype=np.uint8)
         syndrome[5] = 1
@@ -162,11 +72,9 @@ class TestFiredDetectorGraph:
         assert g.edge_features.shape == (0, EDGE_DIM)
         assert g.fired_indices[0] == 5
 
-    # -- Shape tests --
-
     @pytest.mark.parametrize("n_fired", [2, 3, 5, 10])
     def test_complete_graph_edge_count(self, n_fired: int) -> None:
-        """N fired detectors → N*(N-1) directed edges."""
+        """N fired detectors => N*(N-1) directed edges."""
         coords = np.random.default_rng(42).uniform(0, 10, (20, 3))
         meta = _make_metadata(coords, distance=5, rounds=5)
         syndrome = np.zeros(20, dtype=np.uint8)
@@ -188,8 +96,6 @@ class TestFiredDetectorGraph:
         assert g.node_features.dtype == np.float32
         assert g.edge_features.dtype == np.float32
         assert g.edge_index.dtype == np.int64
-
-    # -- Value tests --
 
     def test_normalized_coords_range(self, d3_metadata: CircuitMetadata) -> None:
         """Normalized (x, y, t) should be in [0, 1]."""
@@ -223,7 +129,7 @@ class TestFiredDetectorGraph:
         assert np.all((basis == 0) | (basis == 1))
 
     def test_basis_flag_both_types_present(self, d3_metadata: CircuitMetadata) -> None:
-        """All detectors fired → both stabilizer types present."""
+        """All detectors fired => both stabilizer types present."""
         syndrome = np.ones(d3_metadata.num_detectors, dtype=np.uint8)
         g = build_fired_detector_graph(syndrome, d3_metadata)
 
@@ -265,7 +171,7 @@ class TestFiredDetectorGraph:
 
         g = build_fired_detector_graph(syndrome, meta)
 
-        # Edge 0→1: dx = 1-0 = 1.0, dy = 1-0 = 1.0, dt = 1-0 = 1.0
+        # Edge 0=>1: dx = 1-0 = 1.0, dy = 1-0 = 1.0, dt = 1-0 = 1.0
         # (normalized: 6/6=1, 6/6=1, 3/3=1)
         # euclidean = sqrt(3), chebyshev = 1
         e01_idx = None
@@ -282,7 +188,7 @@ class TestFiredDetectorGraph:
         np.testing.assert_allclose(ef[3], np.sqrt(3), atol=1e-5)  # euclidean
         np.testing.assert_allclose(ef[4], 1.0, atol=1e-6)  # chebyshev
 
-        # Edge 1→0: opposite sign deltas
+        # Edge 1=>0: opposite sign deltas
         e10_idx = None
         for k in range(g.edge_index.shape[1]):
             if g.edge_index[0, k] == 1 and g.edge_index[1, k] == 0:
@@ -294,8 +200,6 @@ class TestFiredDetectorGraph:
         np.testing.assert_allclose(ef_rev[:3], -ef[:3], atol=1e-6)
         np.testing.assert_allclose(ef_rev[3], ef[3], atol=1e-6)  # same dist
         np.testing.assert_allclose(ef_rev[4], ef[4], atol=1e-6)
-
-    # -- Symmetry / consistency --
 
     def test_edges_are_bidirectional(self, d3_metadata: CircuitMetadata) -> None:
         syndrome = np.zeros(d3_metadata.num_detectors, dtype=np.uint8)
@@ -314,7 +218,7 @@ class TestFiredDetectorGraph:
         assert not np.any(src == dst)
 
     def test_edge_deltas_antisymmetric(self, d3_metadata: CircuitMetadata) -> None:
-        """delta(i→j) = -delta(j→i) for directional edge features."""
+        """delta(i=>j) = -delta(j=>i) for directional edge features."""
         syndrome = np.zeros(d3_metadata.num_detectors, dtype=np.uint8)
         syndrome[0] = syndrome[5] = syndrome[10] = 1
         g = build_fired_detector_graph(syndrome, d3_metadata)
@@ -350,8 +254,6 @@ class TestFiredDetectorGraph:
 
         np.testing.assert_array_equal(sorted(g.fired_indices), sorted(fired))
 
-    # -- Cross-distance tests --
-
     @pytest.mark.parametrize(
         "fixture_name,d,r",
         [("d3_metadata", 3, 3), ("d5_metadata", 5, 5), ("d7_metadata", 7, 7)],
@@ -363,7 +265,7 @@ class TestFiredDetectorGraph:
         r: int,
         request: pytest.FixtureRequest,
     ) -> None:
-        """All detectors fired → correct shapes for d=3, 5, 7."""
+        """All detectors fired => correct shapes for d=3, 5, 7."""
         meta: CircuitMetadata = request.getfixturevalue(fixture_name)
         syndrome = np.ones(meta.num_detectors, dtype=np.uint8)
         g = build_fired_detector_graph(syndrome, meta)
@@ -374,8 +276,6 @@ class TestFiredDetectorGraph:
         assert g.node_features.shape == (N, NODE_DIM)
         assert g.edge_index.shape == (2, E)
         assert g.edge_features.shape == (E, EDGE_DIM)
-
-    # -- Normalization invariance across distances --
 
     def test_normalization_scale_invariance(self) -> None:
         """Same fractional position gives same normalized coords
@@ -395,8 +295,6 @@ class TestFiredDetectorGraph:
             g3.node_features[0, :5], g7.node_features[0, :5], atol=1e-6
         )
 
-    # -- Validation --
-
     def test_dataclass_validation_catches_bad_shape(self) -> None:
         with pytest.raises(ValueError, match="node_features shape"):
             FiredDetectorGraph(
@@ -414,12 +312,11 @@ class TestFiredDetectorGraph:
                 distance=3,
                 rounds=3,
                 num_detectors=5,
+                dem_edge_weights=np.zeros((5, 5), dtype=np.float64),
             )
 
-    # -- extract_circuit_metadata --
-
     def test_extract_metadata_d3(self) -> None:
-        c = stim.Circuit.from_file("data/circuits/d3_r3_p0_01.stim")
+        c = stim.Circuit.from_file("data/circuits/memory/d3_r3_p0_01.stim")
         meta = extract_circuit_metadata(c, distance=3, rounds=3)
 
         assert meta.num_detectors == 24
@@ -428,7 +325,7 @@ class TestFiredDetectorGraph:
         assert meta.detector_coords.shape == (24, 3)
 
     def test_extract_metadata_d7(self) -> None:
-        c = stim.Circuit.from_file("data/circuits/d7_r7_p0_01.stim")
+        c = stim.Circuit.from_file("data/circuits/memory/d7_r7_p0_01.stim")
         meta = extract_circuit_metadata(c, distance=7, rounds=7)
 
         assert meta.num_detectors == 336
@@ -436,25 +333,11 @@ class TestFiredDetectorGraph:
         assert meta.rounds == 7
 
 
-# -----------------------------------------------------------------------
-# CircuitSetting
-# -----------------------------------------------------------------------
-
-CIRCUITS_DIR = Path("data/circuits")
+CIRCUITS_DIR = Path("data/circuits/memory")
 
 
 class TestCircuitSetting:
     """CircuitSetting dataclass validation."""
-
-    def test_valid(self) -> None:
-        s = CircuitSetting(
-            circuit_path=CIRCUITS_DIR / "d3_r3_p0_01.stim",
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-        )
-        assert s.distance == 3
-        assert s.error_prob == 0.01
 
     def test_invalid_distance(self) -> None:
         with pytest.raises(ValueError, match="distance"):
@@ -484,9 +367,7 @@ class TestCircuitSetting:
             )
 
 
-# -----------------------------------------------------------------------
 # settings_from_circuit_dir
-# -----------------------------------------------------------------------
 
 
 class TestSettingsFromCircuitDir:
@@ -525,11 +406,6 @@ class TestSettingsFromCircuitDir:
         settings = settings_from_circuit_dir(CIRCUITS_DIR)
         for s in settings:
             assert s.circuit_path.exists(), f"Missing: {s.circuit_path}"
-
-
-# -----------------------------------------------------------------------
-# WorkerSampler
-# -----------------------------------------------------------------------
 
 
 def _d3_settings() -> list[CircuitSetting]:
@@ -595,11 +471,6 @@ class TestWorkerSampler:
     def test_empty_settings_raises(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
             WorkerSampler([], worker_seed=42)
-
-
-# -----------------------------------------------------------------------
-# StreamingSurfaceCodeDataset
-# -----------------------------------------------------------------------
 
 
 class TestStreamingSurfaceCodeDataset:
@@ -711,3 +582,117 @@ class TestStreamingSurfaceCodeDataset:
     def test_empty_settings_raises(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
             StreamingSurfaceCodeDataset(settings=[], master_seed=42)
+
+
+class TestCustomMetadataExtractor:
+    """WorkerSampler and StreamingSurfaceCodeDataset accept a profile's
+    metadata extractor, so any registered operation can be served by the
+    same dataset class."""
+
+    def test_worker_sampler_calls_custom_extractor(self) -> None:
+        """WorkerSampler invokes the supplied extractor for every setting."""
+        settings = _d3_settings()
+        call_log: list[tuple[int, int]] = []
+
+        def tracking_extractor(
+            circuit: stim.Circuit, distance: int, rounds: int
+        ) -> CircuitMetadata:
+            call_log.append((distance, rounds))
+            return extract_circuit_metadata(circuit, distance, rounds)
+
+        sampler = WorkerSampler(
+            settings, worker_seed=42, metadata_extractor=tracking_extractor
+        )
+        assert len(call_log) == len(settings)
+        for (d, r), s in zip(call_log, settings, strict=True):
+            assert d == s.distance
+            assert r == s.rounds
+
+        syn, obs, meta, p = sampler.sample()
+        assert isinstance(meta, CircuitMetadata)
+
+    def test_worker_sampler_default_extractor_matches_explicit(self) -> None:
+        """Omitting metadata_extractor is identical to passing
+        extract_circuit_metadata."""
+        settings = _d3_settings()
+        s_default = WorkerSampler(settings, worker_seed=77)
+        s_explicit = WorkerSampler(
+            settings,
+            worker_seed=77,
+            metadata_extractor=extract_circuit_metadata,
+        )
+
+        for _ in range(20):
+            syn_d, obs_d, meta_d, p_d = s_default.sample()
+            syn_e, obs_e, meta_e, p_e = s_explicit.sample()
+            np.testing.assert_array_equal(syn_d, syn_e)
+            np.testing.assert_array_equal(obs_d, obs_e)
+            assert p_d == p_e
+
+    def test_dataset_passes_extractor_to_sampler(self) -> None:
+        """StreamingSurfaceCodeDataset threads the metadata_extractor
+        through to the WorkerSampler it creates in __iter__."""
+        settings = _d3_settings()
+        calls: list[int] = []
+
+        def counting_extractor(
+            circuit: stim.Circuit, distance: int, rounds: int
+        ) -> CircuitMetadata:
+            calls.append(1)
+            return extract_circuit_metadata(circuit, distance, rounds)
+
+        ds = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=42,
+            metadata_extractor=counting_extractor,
+        )
+        it = iter(ds)
+        next(it)
+        assert len(calls) == len(settings)
+
+    def test_dataset_with_profile_contract_and_extractor(self) -> None:
+        """Dataset parameterized by a profile's contract and extractor
+        produces correct feature dimensions and label shape."""
+        from sampling.profile import MEMORY_PROFILE
+
+        settings = _d3_settings()
+        profile = MEMORY_PROFILE
+        ds = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=42,
+            contract=profile.data_contract,
+            metadata_extractor=profile.metadata_extractor,
+        )
+        assert ds.contract == profile.data_contract
+
+        data = next(iter(ds))
+        assert data.x.shape[1] == profile.data_contract.node_dim
+        assert data.edge_attr.shape[1] == profile.data_contract.edge_dim
+        assert data.y.shape == (profile.data_contract.num_observables,)
+
+    def test_every_registered_operation_constructs_dataset(self) -> None:
+        """For each registered operation with committed circuits, a
+        dataset can be constructed from its profile's contract and
+        metadata extractor and yields correctly shaped samples."""
+        from sampling.profile import registered_operations, resolve_profile
+        from sampling.sampler import settings_from_circuit_dir
+
+        repo_root = Path(__file__).resolve().parent.parent
+        for op in registered_operations():
+            profile = resolve_profile(op)
+            root = repo_root / profile.circuit_root
+            if not root.is_dir():
+                pytest.skip(f"Circuit root {root} not present")
+            settings = settings_from_circuit_dir(root)
+            contract = profile.data_contract
+            ds = StreamingSurfaceCodeDataset(
+                settings=settings,
+                master_seed=42,
+                contract=contract,
+                metadata_extractor=profile.metadata_extractor,
+            )
+            data = next(iter(ds))
+            assert data.x.shape[1] == contract.node_dim
+            assert data.edge_attr.shape[1] == contract.edge_dim
+            assert data.y.shape == (contract.num_observables,)
+            assert data.logical.shape == (contract.num_observables,)

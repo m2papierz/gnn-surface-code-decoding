@@ -4,7 +4,7 @@ Device-side counterpart of :func:`sampling.graph.build_fired_detector_graph`:
 a batch of syndrome bit-vectors already resident in device memory becomes a
 PyG-batched fired-detector complete graph without a round trip through numpy.
 
-The numpy builder remains the normative definition of the representation —
+The numpy builder remains the normative definition of the representation -
 this module reproduces it bitwise, it does not extend it.
 """
 
@@ -21,8 +21,10 @@ from sampling.graph import EDGE_DIM, NODE_DIM, CircuitMetadata
 
 __all__ = [
     "DeviceGraphBatch",
+    "DeviceMetadata",
     "build_fired_detector_graphs",
     "detector_coords_to_device",
+    "metadata_to_device",
 ]
 
 
@@ -42,7 +44,7 @@ class DeviceGraphBatch:
         Node features, shots concatenated in order.
     edge_index : Tensor, shape ``(2, E_total)``, int64
         Directed COO edges with node indices already offset per shot.
-    edge_attr : Tensor, shape ``(E_total, 5)``, float32
+    edge_attr : Tensor, shape ``(E_total, 6)``, float32
         Edge features.
     batch : Tensor, shape ``(N_total,)``, int64
         Shot index of each node.
@@ -63,7 +65,7 @@ class DeviceGraphBatch:
     def total_nodes(self) -> int:
         """Node count across the whole batch.
 
-        Free on the host — a tensor shape, not a device read.  This and
+        Free on the host - a tensor shape, not a device read.  This and
         :attr:`total_edges` are the only shape keys the bucketed runner needs,
         which is what lets it select a rung without any sync.
         """
@@ -71,7 +73,7 @@ class DeviceGraphBatch:
 
     @property
     def total_edges(self) -> int:
-        """Edge count across the whole batch (free — a tensor shape)."""
+        """Edge count across the whole batch (free - a tensor shape)."""
         return self.edge_index.shape[1]
 
     def __post_init__(self) -> None:
@@ -105,6 +107,24 @@ class DeviceGraphBatch:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceMetadata:
+    """Per-circuit metadata resident on a CUDA device.
+
+    Uploaded once via :func:`metadata_to_device` and reused across batches.
+
+    Parameters
+    ----------
+    coords : Tensor, shape ``(D, 3)``, float64
+        Detector coordinates.
+    dem_weights : Tensor, shape ``(D, D)``, float32
+        Pairwise DEM error probabilities.
+    """
+
+    coords: torch.Tensor
+    dem_weights: torch.Tensor
+
+
 def detector_coords_to_device(
     metadata: CircuitMetadata,
     device: torch.device | str,
@@ -129,12 +149,39 @@ def detector_coords_to_device(
     return torch.as_tensor(coords, dtype=torch.float64, device=device).contiguous()
 
 
+def metadata_to_device(
+    metadata: CircuitMetadata,
+    device: torch.device | str,
+) -> DeviceMetadata:
+    """Upload detector coordinates and DEM weights to a CUDA device.
+
+    Parameters
+    ----------
+    metadata : CircuitMetadata
+        Circuit metadata to upload.
+    device : torch.device or str
+        Target CUDA device.
+
+    Returns
+    -------
+    DeviceMetadata
+    """
+    coords = torch.as_tensor(
+        metadata.detector_coords[:, :3], dtype=torch.float64, device=device
+    ).contiguous()
+    dem_weights = torch.as_tensor(
+        metadata.dem_edge_weights, dtype=torch.float32, device=device
+    ).contiguous()
+    return DeviceMetadata(coords=coords, dem_weights=dem_weights)
+
+
 def build_fired_detector_graphs(
     syndromes: torch.Tensor,
     coords: torch.Tensor,
     *,
     distance: int,
     rounds: int,
+    dem_weights: torch.Tensor | None = None,
 ) -> DeviceGraphBatch:
     """Build fired-detector complete graphs for a batch of syndromes.
 
@@ -150,6 +197,9 @@ def build_fired_detector_graphs(
         Code distance, used for spatial normalisation as ``2 * distance``.
     rounds : int
         Syndrome measurement rounds, used for temporal normalisation.
+    dem_weights : Tensor, shape ``(D, D)``, float32, optional
+        DEM pairwise error probabilities on the same device.  From
+        :func:`metadata_to_device`.
 
     Returns
     -------
@@ -177,13 +227,24 @@ def build_fired_detector_graphs(
             f"coords rows {coords.shape[0]} != syndrome detectors {syndromes.shape[1]}"
         )
 
+    num_det = coords.shape[0]
+    if dem_weights is None:
+        dem_weights = torch.zeros(
+            (num_det, num_det), dtype=torch.float32, device=syndromes.device
+        )
+    if dem_weights.shape != (num_det, num_det):
+        raise ValueError(
+            f"dem_weights shape {tuple(dem_weights.shape)} != "
+            f"expected ({num_det}, {num_det})"
+        )
+
     num_shots = syndromes.shape[0]
     if num_shots < 1:
         raise ValueError("syndromes must contain at least one shot, got 0")
     device = syndromes.device
 
     # Row-major nonzero yields fired detectors already grouped by shot and
-    # ascending within a shot — the node ordering the numpy builder produces.
+    # ascending within a shot - the node ordering the numpy builder produces.
     fired = torch.nonzero(syndromes, as_tuple=False)
     shot = fired[:, 0].contiguous()
     detector = fired[:, 1].contiguous()
@@ -210,6 +271,8 @@ def build_fired_detector_graphs(
         node_prefix[:-1],
         node_count,
         edge_prefix[:-1],
+        dem_weights,
+        detector,
         edge_index,
         edge_attr,
         num_edges,

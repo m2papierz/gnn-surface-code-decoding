@@ -2,7 +2,7 @@
 
 The runner must produce logits within atol=1e-5 of eager PyTorch on any valid
 batch, including degenerate cases (all-empty, single-node, mixed sizes), and
-must not leak state between calls that share a bucket — the pad step resets
+must not leak state between calls that share a bucket - the pad step resets
 only the slack the previous call dirtied, so a large batch followed by a
 smaller one is the case most likely to expose a stale-buffer bug.
 """
@@ -39,7 +39,7 @@ def _make_model(hidden: int = 32, layers: int = 2):
 def _make_syndromes(distance: int, n_shots: int, seed: int = 7) -> np.ndarray:
     import stim
 
-    path = f"data/circuits/d{distance}_r{distance}_p0_01.stim"
+    path = f"data/circuits/memory/d{distance}_r{distance}_p0_01.stim"
     circuit = stim.Circuit.from_file(path)
     sampler = circuit.compile_detector_sampler(seed=seed)
     return sampler.sample(shots=n_shots, bit_packed=False).astype(np.uint8)
@@ -48,19 +48,20 @@ def _make_syndromes(distance: int, n_shots: int, seed: int = 7) -> np.ndarray:
 def _build_device_batch(syndromes: np.ndarray, distance: int):
     import stim
 
-    from kernels.graph_build import (
-        build_fired_detector_graphs,
-        detector_coords_to_device,
-    )
+    from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
     from sampling.graph import extract_circuit_metadata
 
-    path = f"data/circuits/d{distance}_r{distance}_p0_01.stim"
+    path = f"data/circuits/memory/d{distance}_r{distance}_p0_01.stim"
     circuit = stim.Circuit.from_file(path)
     metadata = extract_circuit_metadata(circuit, distance=distance, rounds=distance)
-    coords = detector_coords_to_device(metadata, "cuda")
+    dev_meta = metadata_to_device(metadata, "cuda")
     device_syndromes = torch.as_tensor(syndromes, device="cuda")
     return build_fired_detector_graphs(
-        device_syndromes, coords, distance=distance, rounds=distance
+        device_syndromes,
+        dev_meta.coords,
+        distance=distance,
+        rounds=distance,
+        dem_weights=dev_meta.dem_weights,
     )
 
 
@@ -99,8 +100,8 @@ class TestLadder:
     def test_geometric_ladder_bounds_waste(self) -> None:
         """Each step is bounded by the ratio plus one alignment quantum.
 
-        Alignment, not the ratio, dominates the low rungs — 32 to 64 is a
-        factor of two — but the absolute waste there is a few dozen edges.
+        Alignment, not the ratio, dominates the low rungs - 32 to 64 is a
+        factor of two - but the absolute waste there is a few dozen edges.
         The asymptotic bound is what matters, so it is asserted separately.
         """
         from kernels.bucketed import _geometric_ladder
@@ -250,7 +251,7 @@ class TestPrewarm:
     """Captures must be movable off the latency path.
 
     Rungs are selected from batch totals, which vary shot to shot, so a live
-    stream keeps reaching first-time buckets long after startup — 24 distinct
+    stream keeps reaching first-time buckets long after startup - 24 distinct
     rung pairs over 20k shots at d=7/B=1.  Each is a capture, and a capture in
     the serving stream stalls it far past the p50 this path exists to deliver.
     """
@@ -375,7 +376,7 @@ class TestValidation:
             runner.forward(
                 torch.zeros(1, 6).cuda(),
                 torch.zeros(2, 0, dtype=torch.int64).cuda(),
-                torch.zeros(0, 5).cuda(),
+                torch.zeros(0, 6).cuda(),
                 torch.zeros(1, dtype=torch.int64).cuda(),
                 num_graphs=8,
             )
@@ -392,7 +393,7 @@ class TestValidation:
             runner.forward(
                 torch.randn(5, 6).cuda(),
                 torch.zeros(2, 20, dtype=torch.int64).cuda(),
-                torch.zeros(20, 5).cuda(),
+                torch.zeros(20, 6).cuda(),
                 torch.zeros(5, dtype=torch.int64).cuda(),
                 num_graphs=1,
             )
@@ -410,7 +411,7 @@ class TestValidation:
             runner.forward(
                 torch.randn(5, 6).cuda(),
                 torch.zeros(2, 20, dtype=torch.int64).cuda(),
-                torch.zeros(20, 5).cuda(),
+                torch.zeros(20, 6).cuda(),
                 torch.zeros(5, dtype=torch.int64).cuda(),
                 num_graphs=1,
             )

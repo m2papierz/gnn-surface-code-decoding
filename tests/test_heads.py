@@ -10,9 +10,9 @@ from model.decoder import LogicalHead, build_model
 def _make_graph(num_nodes: int = 6, num_edges: int = 10) -> Data:
     """Create a minimal detector graph for testing (enriched features)."""
     return Data(
-        x=torch.rand(num_nodes, 5),
+        x=torch.rand(num_nodes, 6),
         edge_index=torch.randint(0, num_nodes, (2, num_edges)),
-        edge_attr=torch.rand(num_edges, 3),
+        edge_attr=torch.rand(num_edges, 6),
         y=torch.zeros(1),
         logical=torch.zeros(1),
         setting_id=torch.tensor(0),
@@ -72,24 +72,10 @@ class TestLogicalHead:
 class TestQECDecoder:
     """Tests for the full encoder + head pipeline."""
 
-    def test_forward_runs(self, batched: Batch) -> None:
-        model = build_model(
-            node_dim=5,
-            edge_dim=3,
-            hidden_dim=32,
-            num_layers=2,
-            dropout=0.0,
-        )
-        model.eval()
-        with torch.no_grad():
-            logits = model(batched)
-        assert logits is not None
-        assert logits.ndim >= 1
-
     def test_output_shape(self, batched: Batch) -> None:
         model = build_model(
-            node_dim=5,
-            edge_dim=3,
+            node_dim=6,
+            edge_dim=6,
             hidden_dim=32,
             num_layers=2,
             dropout=0.0,
@@ -101,8 +87,8 @@ class TestQECDecoder:
 
     def test_backward_pass(self, batched: Batch) -> None:
         model = build_model(
-            node_dim=5,
-            edge_dim=3,
+            node_dim=6,
+            edge_dim=6,
             hidden_dim=32,
             num_layers=2,
             dropout=0.0,

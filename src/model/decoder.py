@@ -15,7 +15,7 @@ from torch_geometric.nn import global_add_pool, global_max_pool
 from torch_geometric.utils import softmax
 
 from model.encoder import DetectorGraphEncoder
-from sampling.graph import EDGE_DIM, NODE_DIM
+from sampling.representation import SPATIAL
 
 
 class BatchedGraph(Protocol):
@@ -47,8 +47,8 @@ class LogicalHead(nn.Module):
     """
     Graph-level head for predicting logical observable flips.
 
-    Concatenates three node-level pooling channels — attention-weighted
-    sum, max, and (unweighted) sum — feeding a 3H-dimensional vector
+    Concatenates three node-level pooling channels - attention-weighted
+    sum, max, and (unweighted) sum - feeding a 3H-dimensional vector
     into a two-layer MLP.
 
     Parameters
@@ -154,8 +154,8 @@ class QECDecoder(nn.Module):
 
 def build_model(
     *,
-    node_dim: int = NODE_DIM,
-    edge_dim: int = EDGE_DIM,
+    node_dim: int = SPATIAL.node_dim,
+    edge_dim: int = SPATIAL.edge_dim,
     hidden_dim: int = 128,
     num_layers: int = 6,
     num_observables: int = 1,
@@ -169,7 +169,7 @@ def build_model(
     node_dim : int
         Input node feature dimensionality (default: 6).
     edge_dim : int
-        Input edge feature dimensionality (default: 5).
+        Input edge feature dimensionality (default: 6).
     hidden_dim, num_layers, dropout
         Encoder architecture parameters.
     num_observables : int

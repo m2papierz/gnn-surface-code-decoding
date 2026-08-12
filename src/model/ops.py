@@ -9,14 +9,14 @@ Backends
 --------
 ``"pytorch"``
     Pure PyTorch reference implementations (default, always available).
-    Full autograd support — safe for training and inference.
+    Full autograd support - safe for training and inference.
 ``"compiled"``
-    ``torch.compile``-wrapped PyTorch — identical numerics, kernel fusion
-    handled by the compiler.  Full autograd support — recommended for
+    ``torch.compile``-wrapped PyTorch - identical numerics, kernel fusion
+    handled by the compiler.  Full autograd support - recommended for
     training on GPU.
 ``"cuda"``
     Hand-written CUDA kernels loaded from ``kernels`` (requires build).
-    **Inference only** — these are forward-pass kernels without autograd
+    **Inference only** - these are forward-pass kernels without autograd
     backward implementations.  Using this backend for training will
     silently break gradient propagation.
 
@@ -121,7 +121,7 @@ def set_backend(backend: str | Backend) -> None:
 
     Asking for ``"cuda"`` when the extension is not built raises.  A silent
     downgrade to ``"pytorch"`` would let a caller label a benchmark row, or an
-    equivalence test, with a backend that never ran — the same failure the
+    equivalence test, with a backend that never ran - the same failure the
     removed ``try/except`` in this module used to hide.  Callers that legitimately
     tolerate a missing extension catch this and skip, rather than being handed a
     different backend under the name they asked for.
@@ -170,7 +170,7 @@ def _init_backend_from_env() -> None:
         set_backend(env)
     except (ValueError, RuntimeError) as exc:
         logger.warning(
-            "QECDEC_BACKEND='%s' unusable (%s) — starting on pytorch", env, exc
+            "QECDEC_BACKEND='%s' unusable (%s) - starting on pytorch", env, exc
         )
         set_backend(Backend.PYTORCH)
 
@@ -228,7 +228,7 @@ def edge_update_reference(
     edge_h: torch.Tensor,
     weights: EdgeUpdateWeights,
 ) -> torch.Tensor:
-    """Pure-PyTorch edge update — the normative definition of the operation.
+    """Pure-PyTorch edge update - the normative definition of the operation.
 
     Deliberately free of backend dispatch: :mod:`kernels.ops` falls back to
     *this*, not to :func:`edge_update`, because falling back to the dispatcher

@@ -1,6 +1,6 @@
 """GPU graph construction vs the numpy reference builder.
 
-Acceptance is bit-identity, not a tolerance — the kernel and
+Acceptance is bit-identity, not a tolerance - the kernel and
 ``build_fired_detector_graph`` must define the same representation, and a
 tolerance would hide exactly the feature-definition drift this guards against.
 """
@@ -20,9 +20,9 @@ from sampling.graph import (
 
 
 CIRCUITS = {
-    3: "data/circuits/d3_r3_p0_01.stim",
-    5: "data/circuits/d5_r5_p0_01.stim",
-    7: "data/circuits/d7_r7_p0_01.stim",
+    3: "data/circuits/memory/d3_r3_p0_01.stim",
+    5: "data/circuits/memory/d5_r5_p0_01.stim",
+    7: "data/circuits/memory/d7_r7_p0_01.stim",
 }
 
 
@@ -111,7 +111,7 @@ class TestBitIdentity:
 
     @pytest.mark.parametrize("distance", [3, 5, 7])
     def test_matches_on_dense_syndromes(self, distance: int) -> None:
-        """All detectors fired — the largest complete graph the code can build."""
+        """All detectors fired - the largest complete graph the code can build."""
         metadata = _metadata(distance)
         syndromes = np.ones((4, metadata.num_detectors), dtype=np.uint8)
         _assert_identical(_build_on_device(syndromes, metadata), syndromes, metadata)
@@ -131,7 +131,7 @@ class TestDegenerateShapes:
 
         assert built.x.shape == (0, 6)
         assert built.edge_index.shape == (2, 0)
-        assert built.edge_attr.shape == (0, 5)
+        assert built.edge_attr.shape == (0, 6)
         assert built.num_graphs == 8
         assert built.num_fired.sum().item() == 0
 
@@ -227,7 +227,7 @@ class TestDeviceGraphBatchRecord:
             DeviceGraphBatch(
                 x=torch.zeros(4, 6),
                 edge_index=torch.zeros(2, 0, dtype=torch.int64),
-                edge_attr=torch.zeros(0, 5),
+                edge_attr=torch.zeros(0, 6),
                 batch=torch.zeros(3, dtype=torch.int64),
                 num_fired=torch.tensor([4], dtype=torch.int64),
                 num_graphs=1,
@@ -240,7 +240,7 @@ class TestDeviceGraphBatchRecord:
             DeviceGraphBatch(
                 x=torch.zeros(2, 6),
                 edge_index=torch.zeros(2, 2, dtype=torch.int64),
-                edge_attr=torch.zeros(2, 5),
+                edge_attr=torch.zeros(2, 6),
                 batch=torch.zeros(2, dtype=torch.int64),
                 num_fired=torch.tensor([2, 0], dtype=torch.int64),
                 num_graphs=1,

@@ -7,7 +7,7 @@ CUDA Graph per bucket and replays it, removing per-invocation launch overhead.
 Layout
 ------
 Real nodes are copied to ``[0, N_real)`` of a fixed-size buffer, keeping the
-indices they already had, so ``edge_index`` needs no remapping — the copy is
+indices they already had, so ``edge_index`` needs no remapping - the copy is
 four ``copy_`` calls and nothing else.  Node and edge capacity are drawn from
 two *independent* ladders over the batch totals.  Coupling them is what made
 the original design pathological: complete-graph edge count is quadratic in
@@ -16,7 +16,7 @@ edge work by a measured 1.9x-26.5x and turned this path into a regression
 against eager everywhere except tiny batches.
 
 Padding is exact, not approximate.  Unused node slots and the sink node all
-carry batch index ``B`` — one graph beyond the real batch — and padded edges
+carry batch index ``B`` - one graph beyond the real batch - and padded edges
 are self-loops on the sink, so messages can only flow *into* padding, never
 out of it.  Pooling runs at size ``B + 1`` and the sink row is discarded.  The
 model is untouched and no mask threads through the head.
@@ -27,7 +27,7 @@ view into the bucket's static output buffer, valid until the next call.
 
 Capture is lazy, and a first-time bucket captures inside the calling stream.
 Because rungs are selected from *batch totals*, which vary shot to shot, a real
-syndrome stream keeps reaching new buckets well past startup — 24 distinct rung
+syndrome stream keeps reaching new buckets well past startup - 24 distinct rung
 pairs over 20k shots at d=7/B=1.  Anything serving live traffic should call
 :meth:`BucketedGraphRunner.prewarm` with a representative sample of totals
 first, so those captures are paid at setup rather than as stalls on the latency
@@ -40,11 +40,15 @@ import logging
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import torch
 
 from model.decoder import QECDecoder
+
+
+if TYPE_CHECKING:
+    from sampling.representation import DataContract
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +60,7 @@ def _geometric_ladder(
     """Build an ascending ladder of capacities, each a multiple of *align*.
 
     A geometric ladder bounds padding waste at roughly ``ratio`` regardless of
-    scale, while keeping the number of distinct CUDA-Graph captures small —
+    scale, while keeping the number of distinct CUDA-Graph captures small -
     each rung costs a capture and its own static buffers.
 
     Parameters
@@ -152,7 +156,10 @@ class BucketedGraphRunner:
         Ascending capacity ladders.  A batch exceeding either top rung raises
         rather than triggering a fresh capture.
     node_dim, edge_dim : int
-        Feature dimensions (v2 defaults: 6, 5).
+        Feature dimensions (spatial defaults: 6, 6).
+    contract : DataContract, optional
+        If provided, validates that the representation version is
+        supported by the CUDA fast path and extracts dimensions from it.
     """
 
     def __init__(
@@ -163,8 +170,21 @@ class BucketedGraphRunner:
         node_buckets: tuple[int, ...] = DEFAULT_NODE_BUCKETS,
         edge_buckets: tuple[int, ...] = DEFAULT_EDGE_BUCKETS,
         node_dim: int = 6,
-        edge_dim: int = 5,
+        edge_dim: int = 6,
+        contract: DataContract | None = None,
     ) -> None:
+        if contract is not None:
+            from sampling.representation import SUPPORTED_FAST_PATH_VERSIONS
+
+            if contract.version not in SUPPORTED_FAST_PATH_VERSIONS:
+                raise ValueError(
+                    f"Representation {contract.version!r} is not supported by "
+                    f"the CUDA fast path. Supported: "
+                    f"{sorted(SUPPORTED_FAST_PATH_VERSIONS)}"
+                )
+            node_dim = contract.node_dim
+            edge_dim = contract.edge_dim
+
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         if not next(model.parameters()).is_cuda:
@@ -223,7 +243,7 @@ class BucketedGraphRunner:
         Parameters
         ----------
         totals : iterable of (int, int)
-            Observed ``(total_nodes, total_edges)`` per batch — e.g. from
+            Observed ``(total_nodes, total_edges)`` per batch - e.g. from
             :class:`~kernels.graph_build.DeviceGraphBatch` over a calibration
             sample.  Pairs with zero nodes are ignored: they short-circuit
             before any bucket is selected.
@@ -236,7 +256,7 @@ class BucketedGraphRunner:
         Raises
         ------
         ValueError
-            If any pair exceeds the top rung of either ladder — the same
+            If any pair exceeds the top rung of either ladder - the same
             fail-loud rule :meth:`forward` applies, surfaced at setup instead
             of mid-stream.
         """

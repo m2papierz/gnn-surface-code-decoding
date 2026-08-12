@@ -20,7 +20,7 @@ from model.ops import (
     fused_norm_residual_dropout,
     get_backend,
 )
-from sampling.graph import EDGE_DIM, NODE_DIM
+from sampling.representation import SPATIAL
 
 
 class _GINEBlock(nn.Module):
@@ -161,7 +161,7 @@ class DetectorGraphEncoder(nn.Module):
     node_dim : int
         Input node feature dimensionality (default: 6).
     edge_dim : int
-        Input edge feature dimensionality (default: 5).
+        Input edge feature dimensionality (default: 6).
     hidden_dim : int
         Hidden embedding dimensionality (default: 128).
     num_layers : int
@@ -172,8 +172,8 @@ class DetectorGraphEncoder(nn.Module):
 
     def __init__(
         self,
-        node_dim: int = NODE_DIM,
-        edge_dim: int = EDGE_DIM,
+        node_dim: int = SPATIAL.node_dim,
+        edge_dim: int = SPATIAL.edge_dim,
         hidden_dim: int = 128,
         num_layers: int = 6,
         dropout: float = 0.1,

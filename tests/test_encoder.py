@@ -110,13 +110,13 @@ class TestConfiguration:
     def test_custom_input_dims(self) -> None:
         enc = DetectorGraphEncoder(
             node_dim=3,
-            edge_dim=5,
+            edge_dim=6,
             hidden_dim=16,
             num_layers=2,
         )
         x = torch.randn(8, 3)
         ei = torch.randint(0, 8, (2, 12))
-        ea = torch.randn(12, 5)
+        ea = torch.randn(12, 6)
         h, edge_h = enc(x, ei, ea)
         assert h.shape == (8, 16)
         assert edge_h.shape == (12, 16)

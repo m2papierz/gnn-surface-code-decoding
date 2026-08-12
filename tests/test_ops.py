@@ -6,8 +6,8 @@ decision graph):
 tier 1
     float32 fused kernel against eager PyTorch at atol 1e-5.  The fused path is
     float32 throughout, so a deviation beyond that bound is a structural defect
-    — wrong weight block, transposed operand, bad gather, off-by-one edge index
-    — with no precision noise to hide behind.
+    - wrong weight block, transposed operand, bad gather, off-by-one edge index
+    - with no precision noise to hide behind.
 tier 2
     LER re-measurement on the frozen eval sets, required only before the fast
     path serves a reported number.  Lives in the evaluation harness, not here.
@@ -215,7 +215,7 @@ pytestmark_cuda = pytest.mark.skipif(
 
 @pytestmark_cuda
 class TestEdgeUpdateStructuralEquivalence:
-    """Tier 1 — float32 fused kernel against eager PyTorch.
+    """Tier 1 - float32 fused kernel against eager PyTorch.
 
     Every shape here also exercises the tiling: 64x128 output tiles over a
     K=2H march, so the cases below straddle single, partial and multiple tiles
@@ -311,7 +311,7 @@ class TestFusedNormResidualDropoutEquivalence:
 
         from model.encoder import _GINEBlock
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=5, dropout=0.0)
+        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0)
         assert isinstance(block.norm, LayerNorm)
         assert block.norm.mode == "node"
 
@@ -359,7 +359,7 @@ class TestEncoderEquivalence:
     def test_weight_cache_invalidates_on_weight_mutation(self) -> None:
         from model.encoder import _GINEBlock
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=5, dropout=0.0).cuda()
+        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0).cuda()
 
         set_backend("cuda")
         try:
@@ -376,7 +376,7 @@ class TestEncoderEquivalence:
         """Splitting during training would strand the parameter's gradient."""
         from model.encoder import _GINEBlock
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=5, dropout=0.0)
+        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0)
 
         set_backend("pytorch")
         assert block._fused_edge_weights() is None

@@ -5,7 +5,7 @@
  * whole batch of syndromes without leaving the device:
  *
  *   fired_detector_node_features  compacted fired detectors -> (N, 6) float32
- *   fired_detector_edges          node features -> all-pairs (2, E) + (E, 5)
+ *   fired_detector_edges          node features -> all-pairs (2, E) + (E, 6)
  *
  * Both write into caller-owned output buffers, addressed through per-shot
  * base offsets.  With compact offsets the result is the PyG-batched layout;
@@ -28,7 +28,7 @@ namespace qec {
     namespace {
         constexpr int kBlockSize{256};
         constexpr int kNodeDim{6};
-        constexpr int kEdgeDim{5};
+        constexpr int kEdgeDim{6};
         constexpr int kCoordDim{3};
 
         // ------------------------------------------------------------------
@@ -68,7 +68,7 @@ namespace qec {
         }
 
         // ------------------------------------------------------------------
-        // Edge features: [dx, dy, dt, euclidean, chebyshev]
+        // Edge features: [dx, dy, dt, euclidean, chebyshev, dem_weight]
         // ------------------------------------------------------------------
 
         // Largest b in [0, num_shots) with prefix[b] <= e.  `prefix` is the
@@ -98,8 +98,11 @@ namespace qec {
             const int64_t* __restrict__ node_base,    // (B,) first node slot
             const int64_t* __restrict__ node_count,   // (B,) fired detectors
             const int64_t* __restrict__ edge_base,    // (B,) first edge slot
+            const float* __restrict__ dem_weights,    // (D, D) DEM pair probs
+            const int64_t* __restrict__ detector_ids, // (M,) original det id
+            const int64_t num_detectors,              // D
             int64_t* __restrict__ edge_index,         // (2, Me)
-            float* __restrict__ edge_attr,            // (Me, 5)
+            float* __restrict__ edge_attr,            // (Me, 6)
             const int64_t num_edges,
             const int64_t edge_stride,                // row stride of edge_index
             const int64_t num_shots
@@ -140,12 +143,16 @@ namespace qec {
                 )
             };
 
+            const int64_t det_src{detector_ids[src]};
+            const int64_t det_dst{detector_ids[dst]};
+
             float* __restrict__ o{edge_attr + out * kEdgeDim};
             o[0] = dx;
             o[1] = dy;
             o[2] = dt;
             o[3] = __fsqrt_rn(sq);
             o[4] = fmaxf(fmaxf(fabsf(dx), fabsf(dy)), fabsf(dt));
+            o[5] = dem_weights[det_src * num_detectors + det_dst];
         }
 
         inline int64_t grid_for(int64_t n) noexcept {
@@ -218,6 +225,8 @@ namespace qec {
         torch::Tensor node_base,
         torch::Tensor node_count,
         torch::Tensor edge_base,
+        torch::Tensor dem_weights,
+        torch::Tensor detector_ids,
         torch::Tensor edge_index,
         torch::Tensor edge_attr,
         int64_t num_edges
@@ -229,6 +238,16 @@ namespace qec {
         TORCH_CHECK(node_features.dim() == 2 && node_features.size(1) == kNodeDim,
                     "node_features must have shape (M, 6), got ",
                     node_features.sizes());
+        TORCH_CHECK(dem_weights.is_cuda() && dem_weights.is_contiguous(),
+                    "dem_weights must be a contiguous CUDA tensor");
+        TORCH_CHECK(dem_weights.scalar_type() == torch::kFloat32,
+                    "dem_weights must be float32");
+        TORCH_CHECK(dem_weights.dim() == 2
+                    && dem_weights.size(0) == dem_weights.size(1),
+                    "dem_weights must have shape (D, D), got ",
+                    dem_weights.sizes());
+        check_index_vector(detector_ids, "detector_ids",
+                           node_features.size(0));
         TORCH_CHECK(edge_index.is_cuda() && edge_index.is_contiguous(),
                     "edge_index must be a contiguous CUDA tensor");
         TORCH_CHECK(edge_index.scalar_type() == torch::kInt64,
@@ -240,7 +259,7 @@ namespace qec {
         TORCH_CHECK(edge_attr.scalar_type() == torch::kFloat32,
                     "edge_attr must be float32");
         TORCH_CHECK(edge_attr.dim() == 2 && edge_attr.size(1) == kEdgeDim,
-                    "edge_attr must have shape (Me, 5), got ", edge_attr.sizes());
+                    "edge_attr must have shape (Me, 6), got ", edge_attr.sizes());
         TORCH_CHECK(edge_attr.size(0) == edge_index.size(1),
                     "edge_attr rows ", edge_attr.size(0),
                     " != edge_index columns ", edge_index.size(1));
@@ -262,6 +281,9 @@ namespace qec {
             node_base.data_ptr<int64_t>(),
             node_count.data_ptr<int64_t>(),
             edge_base.data_ptr<int64_t>(),
+            dem_weights.data_ptr<float>(),
+            detector_ids.data_ptr<int64_t>(),
+            dem_weights.size(0),
             edge_index.data_ptr<int64_t>(),
             edge_attr.data_ptr<float>(),
             num_edges,

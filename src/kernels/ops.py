@@ -1,7 +1,7 @@
 """CUDA kernel wrappers matching ``model.ops`` signatures.
 
-Each wrapper dispatches on an explicit, testable condition — CUDA device and
-contiguous layout — and otherwise defers to the PyTorch reference in
+Each wrapper dispatches on an explicit, testable condition - CUDA device and
+contiguous layout - and otherwise defers to the PyTorch reference in
 ``model.ops``.  Failures inside a kernel propagate; they are never converted
 into a quiet switch back to PyTorch.
 """
@@ -44,7 +44,7 @@ def edge_update(
     if not (x.is_cuda and x.is_contiguous() and edge_h.is_contiguous()):
         return edge_update_reference(x, edge_index, edge_h, weights)
 
-    # (N, H_out) — the linear block, evaluated per node rather than per edge.
+    # (N, H_out) - the linear block, evaluated per node rather than per edge.
     node_term = F.linear(x, weights.w_sum)
     return _cuda_edge_update(
         node_term=node_term.contiguous(),
