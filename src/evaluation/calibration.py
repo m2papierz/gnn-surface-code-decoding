@@ -2,7 +2,7 @@
 Calibration diagnostics: reliability diagram binning and Expected Calibration Error.
 
 Pure functions operating on raw logits and binary labels. No model or dataset
-dependencies — the plotting script handles loading and inference.
+dependencies - the plotting script handles loading and inference.
 """
 
 from __future__ import annotations

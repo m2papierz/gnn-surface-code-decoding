@@ -1,8 +1,8 @@
 """End-to-end pipeline integration tests using the committed CI shard.
 
-Loads pre-sampled syndromes and labels from ``data/ci_shard/`` — no GPU
+Loads pre-sampled syndromes and labels from ``data/ci_shard/memory/`` - no GPU
 and no Stim dependency required.  Exercises the full path:
-shard → graph builder → PyG batching → model forward → loss backward.
+shard => graph builder => PyG batching => model forward => loss backward.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from sampling.graph import (
 from training import FocalBCEWithLogitsLoss
 
 
-CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard"
+CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
 
 
 @pytest.fixture(scope="module")
@@ -33,7 +33,7 @@ def shard() -> dict[str, np.ndarray | dict]:
     """Load CI shard arrays and manifest once per module."""
     manifest_path = CI_SHARD_DIR / "manifest.json"
     if not manifest_path.exists():
-        pytest.skip("CI shard not found — run scripts/generate_ci_shard.py")
+        pytest.skip("CI shard not found - run scripts/generate_ci_shard_memory.py")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     syndromes = np.load(CI_SHARD_DIR / "syndromes.npy")
@@ -55,11 +55,13 @@ def shard() -> dict[str, np.ndarray | dict]:
 def circuit_metadata(shard: dict) -> CircuitMetadata:
     """Reconstruct CircuitMetadata from stored detector coordinates."""
     m = shard["manifest"]
+    n_det = m["num_detectors"]
     return CircuitMetadata(
         detector_coords=shard["detector_coords"],
         distance=m["distance"],
         rounds=m["rounds"],
-        num_detectors=m["num_detectors"],
+        num_detectors=n_det,
+        dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
     )
 
 
@@ -127,7 +129,7 @@ class TestCIShardIntegrity:
 
 
 class TestGraphBuilding:
-    """Graph builder on shard syndromes — no Stim required."""
+    """Graph builder on shard syndromes - no Stim required."""
 
     def test_all_graphs_have_valid_shapes(self, shard_graphs: list[Data]) -> None:
         for data in shard_graphs:
@@ -158,7 +160,7 @@ class TestGraphBuilding:
 
 
 class TestEndToEndForwardBackward:
-    """Full pipeline: shard → batch → model forward → loss → backward."""
+    """Full pipeline: shard => batch => model forward => loss => backward."""
 
     @pytest.fixture()
     def model(self) -> QECDecoder:

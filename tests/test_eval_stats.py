@@ -1,4 +1,4 @@
-"""Tests for evaluation.stats — McNemar, Wilson, adaptive stopping."""
+"""Tests for evaluation.stats - McNemar, Wilson, adaptive stopping."""
 
 from __future__ import annotations
 
@@ -19,16 +19,11 @@ from evaluation.stats import (
 )
 
 
-# ---------------------------------------------------------------------------
-# McNemar's test
-# ---------------------------------------------------------------------------
-
-
 class TestMcNemarTest:
     """McNemar's test on synthetic disagreement matrices."""
 
     def test_perfect_agreement(self):
-        """All shots agree: both correct or both wrong → p=1."""
+        """All shots agree: both correct or both wrong => p=1."""
         gnn = np.array([True, True, False, False, True])
         baseline = np.array([True, True, False, False, True])
         result = mcnemar_test(gnn, baseline)
@@ -39,7 +34,7 @@ class TestMcNemarTest:
         assert result.baseline_wins == 0
 
     def test_all_gnn_wins(self):
-        """GNN always correct, baseline always wrong — maximally different."""
+        """GNN always correct, baseline always wrong - maximally different."""
         n = 200
         gnn = np.ones(n, dtype=bool)
         baseline = np.zeros(n, dtype=bool)
@@ -62,7 +57,7 @@ class TestMcNemarTest:
         assert result.baseline_wins == 200
 
     def test_symmetric_disagreement_parity(self):
-        """Equal discordant counts → statistic=0, p=1."""
+        """Equal discordant counts => statistic=0, p=1."""
         n = 1000
         # Make exactly equal discordant pairs
         gnn_correct = np.zeros(n, dtype=bool)
@@ -79,7 +74,7 @@ class TestMcNemarTest:
         assert result.baseline_wins == 250
 
     def test_known_statistic(self):
-        """Hand-computed example: b=120, c=80 → chi2=8.0."""
+        """Hand-computed example: b=120, c=80 => chi2=8.0."""
         gnn = np.zeros(400, dtype=bool)
         baseline = np.zeros(400, dtype=bool)
         # Both correct: first 100
@@ -97,7 +92,7 @@ class TestMcNemarTest:
         assert result.n_discordant == 200
         expected_chi2 = (120 - 80) ** 2 / 200  # = 8.0
         assert result.statistic == pytest.approx(expected_chi2)
-        # chi2(1) at 8.0 → p ≈ 0.00468
+        # chi2(1) at 8.0 => p ≈ 0.00468
         assert 0.004 < result.p_value < 0.005
 
     def test_p_value_against_erfc(self):
@@ -122,7 +117,7 @@ class TestMcNemarTest:
         assert result.p_value == pytest.approx(1.0)
 
     def test_single_discordant_pair(self):
-        """One discordant pair: b=1, c=0 → chi2=1."""
+        """One discordant pair: b=1, c=0 => chi2=1."""
         gnn = np.array([True, True])
         baseline = np.array([True, False])
         result = mcnemar_test(gnn, baseline)
@@ -148,11 +143,6 @@ class TestMcNemarTest:
         """Accepts Python lists, not just numpy arrays."""
         result = mcnemar_test([True, False, True], [True, True, False])
         assert isinstance(result, McNemarResult)
-
-
-# ---------------------------------------------------------------------------
-# Wilson interval
-# ---------------------------------------------------------------------------
 
 
 class TestWilsonInterval:
@@ -243,20 +233,15 @@ class TestWilsonInterval:
             wilson_interval(10, 100, alpha=1.0)
 
 
-# ---------------------------------------------------------------------------
-# Per-round LER
-# ---------------------------------------------------------------------------
-
-
 class TestPerRoundLER:
     """Per-round logical error rate conversion."""
 
     def test_zero_ler(self):
-        """Zero LER → zero per-round."""
+        """Zero LER => zero per-round."""
         assert per_round_ler(0.0, 5) == 0.0
 
     def test_one_ler(self):
-        """LER=1 → per-round=1."""
+        """LER=1 => per-round=1."""
         assert per_round_ler(1.0, 5) == 1.0
 
     def test_round_trip(self):
@@ -284,11 +269,6 @@ class TestPerRoundLER:
             per_round_ler(1.01, 3)
 
 
-# ---------------------------------------------------------------------------
-# Adaptive stopping
-# ---------------------------------------------------------------------------
-
-
 class TestAdaptiveStop:
     """Adaptive early-stopping function tests."""
 
@@ -302,7 +282,7 @@ class TestAdaptiveStop:
         return gnn_correct, baseline_correct
 
     def test_insufficient_errors_continue(self):
-        """Below min errors at interim check → continue."""
+        """Below min errors at interim check => continue."""
         # Very low error rates: unlikely to reach 100 errors in 1000 shots
         gnn = np.ones(1000, dtype=bool)
         gnn[:50] = False  # Only 50 GNN errors
@@ -316,7 +296,7 @@ class TestAdaptiveStop:
         assert "Insufficient" in decision.reason
 
     def test_insufficient_errors_final_unresolved(self):
-        """Below min errors at final check → unresolved."""
+        """Below min errors at final check => unresolved."""
         gnn = np.ones(1000, dtype=bool)
         gnn[:50] = False
         baseline = np.ones(1000, dtype=bool)
@@ -328,11 +308,11 @@ class TestAdaptiveStop:
         assert decision.mcnemar is None
 
     def test_interim_boundary_crossed(self):
-        """Large difference at interim → resolved-different."""
+        """Large difference at interim => resolved-different."""
         n = 10000
         gnn = np.ones(n, dtype=bool)
         baseline = np.ones(n, dtype=bool)
-        # GNN: 200 errors, baseline: 800 errors — clear difference
+        # GNN: 200 errors, baseline: 800 errors - clear difference
         gnn[:200] = False
         baseline[:800] = False
 
@@ -343,7 +323,7 @@ class TestAdaptiveStop:
         assert decision.mcnemar.p_value < INTERIM_ALPHA
 
     def test_interim_not_crossed_continue(self):
-        """Moderate difference at interim (p > 0.001) → continue."""
+        """Moderate difference at interim (p > 0.001) => continue."""
         n = 10000
         rng = np.random.default_rng(99)
         # Similar error rates: both ~5%
@@ -358,7 +338,7 @@ class TestAdaptiveStop:
                 assert decision.outcome is None
 
     def test_final_resolved_different(self):
-        """Significant difference at final → resolved-different."""
+        """Significant difference at final => resolved-different."""
         n = 50000
         gnn = np.ones(n, dtype=bool)
         baseline = np.ones(n, dtype=bool)
@@ -373,7 +353,7 @@ class TestAdaptiveStop:
         assert decision.mcnemar.p_value < FINAL_ALPHA
 
     def test_final_resolved_parity(self):
-        """No significant difference at final → resolved-parity."""
+        """No significant difference at final => resolved-parity."""
         n = 10000
         # Both decoders have ~same errors on ~same shots
         gnn = np.ones(n, dtype=bool)
@@ -410,12 +390,12 @@ class TestAdaptiveStop:
         assert decision.outcome == EvalOutcome.UNRESOLVED
 
     def test_one_decoder_insufficient(self):
-        """Only one decoder below threshold → insufficient."""
+        """Only one decoder below threshold => insufficient."""
         n = 5000
         gnn = np.ones(n, dtype=bool)
         baseline = np.ones(n, dtype=bool)
-        gnn[:200] = False  # 200 GNN errors — sufficient
-        baseline[:50] = False  # 50 baseline errors — insufficient
+        gnn[:200] = False  # 200 GNN errors - sufficient
+        baseline[:50] = False  # 50 baseline errors - insufficient
 
         decision = adaptive_stop(gnn, baseline, is_final=False)
         assert decision.action == "continue"

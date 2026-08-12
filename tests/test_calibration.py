@@ -6,15 +6,9 @@ import numpy as np
 import pytest
 
 from evaluation.calibration import (
-    ReliabilityDiagram,
     expected_calibration_error,
     reliability_diagram,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _logit(p: float) -> float:
@@ -22,18 +16,7 @@ def _logit(p: float) -> float:
     return float(np.log(p / (1.0 - p)))
 
 
-# ---------------------------------------------------------------------------
-# reliability_diagram — shape and correctness
-# ---------------------------------------------------------------------------
-
-
 class TestReliabilityDiagram:
-    def test_returns_correct_type(self) -> None:
-        logits = np.array([0.0, 1.0, -1.0])
-        labels = np.array([1, 1, 0])
-        diag = reliability_diagram(logits, labels, n_bins=5)
-        assert isinstance(diag, ReliabilityDiagram)
-
     def test_output_shapes(self) -> None:
         rng = np.random.default_rng(42)
         logits = rng.standard_normal(200)
@@ -53,7 +36,7 @@ class TestReliabilityDiagram:
         assert diag.bin_counts.sum() == n
 
     def test_perfectly_calibrated_logits(self) -> None:
-        """Logits whose sigmoid equals the label mean per bin → diagonal."""
+        """Logits whose sigmoid equals the label mean per bin => diagonal."""
         rng = np.random.default_rng(0)
         n = 50_000
         true_probs = rng.uniform(0.05, 0.95, size=n)
@@ -127,11 +110,6 @@ class TestReliabilityDiagram:
         assert np.all(np.isfinite(diag.bin_confidences[diag.bin_counts > 0]))
 
 
-# ---------------------------------------------------------------------------
-# reliability_diagram — validation
-# ---------------------------------------------------------------------------
-
-
 class TestReliabilityDiagramValidation:
     def test_empty_input(self) -> None:
         with pytest.raises(ValueError, match="empty"):
@@ -150,14 +128,12 @@ class TestReliabilityDiagramValidation:
             reliability_diagram(np.array([0.0]), np.array([1]), n_bins=0)
 
 
-# ---------------------------------------------------------------------------
 # expected_calibration_error
-# ---------------------------------------------------------------------------
 
 
 class TestExpectedCalibrationError:
     def test_perfectly_calibrated_near_zero(self) -> None:
-        """Perfectly calibrated logits → ECE ≈ 0."""
+        """Perfectly calibrated logits => ECE ≈ 0."""
         rng = np.random.default_rng(42)
         n = 50_000
         true_probs = rng.uniform(0.05, 0.95, size=n)
@@ -168,7 +144,7 @@ class TestExpectedCalibrationError:
         assert ece < 0.02, f"ECE {ece:.4f} >= 0.02 for calibrated logits"
 
     def test_overconfident_positive_ece(self) -> None:
-        """Systematically biased logits → ECE > 0."""
+        """Systematically biased logits => ECE > 0."""
         rng = np.random.default_rng(1)
         n = 10_000
         labels = rng.binomial(1, 0.2, size=n)
@@ -185,7 +161,7 @@ class TestExpectedCalibrationError:
         assert 0.0 <= ece <= 1.0
 
     def test_constant_prediction_matches_manual(self) -> None:
-        """All predictions in one bin → ECE = |acc - conf|."""
+        """All predictions in one bin => ECE = |acc - conf|."""
         n = 1000
         p_pred = 0.7
         p_true = 0.3

@@ -31,14 +31,12 @@ from evaluation.stats import (
     per_round_ler,
     wilson_interval,
 )
+from sampling.experiment import ExperimentKey, eval_set_operation
+from sampling.graph import CircuitMetadata
+from sampling.profile import MetricPolicy
 
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Data types
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +63,21 @@ class EvalSet:
         Relative path to source circuit file.
     manifest : dict
         Full manifest contents.
+    phase_ids : ndarray or None, shape ``(D,)``, intp
+        Per-detector phase-window index.  ``None`` for spatial-only sets.
+    phase_names : tuple of str or None
+        Ordered phase-window names.
+    patch_ids : ndarray or None, shape ``(D,)``, intp
+        Per-detector patch (code-block) index.
+    seam_mask : ndarray or None, shape ``(D,)``, bool
+        ``True`` for detectors on the merge boundary.
+    operation : str
+        Operation this set belongs to.  Resolved at construction from the
+        manifest when it declares one, otherwise from the circuit the shots
+        were sampled from.
+    circuit_metadata : CircuitMetadata
+        Pre-built metadata for graph construction.  Consumers use this
+        instead of extracting their own from the circuit.
     """
 
     syndromes: NDArray[np.uint8]
@@ -76,6 +89,65 @@ class EvalSet:
     num_shots: int
     circuit_file: str
     manifest: dict
+    phase_ids: np.ndarray | None = None
+    phase_names: tuple[str, ...] | None = None
+    patch_ids: np.ndarray | None = None
+    seam_mask: np.ndarray | None = None
+    observable_names: tuple[str, ...] | None = None
+    dem_edge_weights: np.ndarray | None = None
+    operation: str = field(init=False)
+    circuit_metadata: CircuitMetadata = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "operation", eval_set_operation(self.manifest, self.circuit_file)
+        )
+        n_det = self.syndromes.shape[1]
+        dem_w = (
+            self.dem_edge_weights
+            if self.dem_edge_weights is not None
+            else np.zeros((n_det, n_det), dtype=np.float64)
+        )
+        object.__setattr__(
+            self,
+            "circuit_metadata",
+            CircuitMetadata(
+                detector_coords=self.detector_coords,
+                distance=self.distance,
+                rounds=self.rounds,
+                num_detectors=n_det,
+                dem_edge_weights=dem_w,
+                phase_ids=self.phase_ids,
+                phase_names=self.phase_names,
+                patch_ids=self.patch_ids,
+                seam_mask=self.seam_mask,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservableResult:
+    """Per-observable error statistics for one decoder at one point.
+
+    Parameters
+    ----------
+    name : str
+        Observable name (from the profile's ordered list).
+    n_shots : int
+        Number of shots scored.
+    n_errors : int
+        Number of shots where this observable was decoded incorrectly.
+    ler : float
+        Per-shot error rate for this observable.
+    ler_interval : WilsonInterval
+        Wilson 95% CI for this observable's error rate.
+    """
+
+    name: str
+    n_shots: int
+    n_errors: int
+    ler: float
+    ler_interval: WilsonInterval
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +161,7 @@ class DecoderPointResult:
     n_shots : int
         Number of shots processed.
     n_errors : int
-        Number of logical errors (shot-level).
+        Number of logical errors (shot-level: any observable wrong).
     ler : float
         Per-shot logical error rate.
     ler_interval : WilsonInterval
@@ -100,6 +172,8 @@ class DecoderPointResult:
         Wilson 95% CI for per-round LER.
     correct : NDArray[np.bool_]
         Per-shot correctness vector (True = correct decode).
+    per_observable : tuple[ObservableResult, ...]
+        Per-observable breakdown.
     """
 
     decoder_name: str
@@ -110,20 +184,19 @@ class DecoderPointResult:
     per_round_ler: float
     per_round_interval: WilsonInterval
     correct: NDArray[np.bool_]
+    per_observable: tuple[ObservableResult, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class EvalPointResult:
-    """Complete evaluation result for one (d, p) point.
+    """Complete evaluation result for one experiment point.
 
     Parameters
     ----------
-    distance : int
-        Code distance.
-    rounds : int
-        Syndrome measurement rounds.
-    error_prob : float
-        Physical error probability.
+    key : ExperimentKey
+        Identity of the point - ``(operation, distance, rounds, error_prob)``.
+        Carried so a serialized row cannot be read as belonging to another
+        experiment.
     n_shots_used : int
         Shots actually processed (may be less than available due to early stop).
     decoder_results : dict[str, DecoderPointResult]
@@ -134,16 +207,48 @@ class EvalPointResult:
         Final stopping decision.
     outcome : EvalOutcome
         Final evaluation outcome for this point.
+    metric_policy : MetricPolicy or None
+        Metric policy from the operation's profile.  Controls which metrics
+        the serializer emits.  ``None`` for backward compatibility with
+        callers that predate the profile registry.
+    observable_names : tuple of str or None
+        Ordered observable names from the profile.  ``None`` when not
+        available (legacy eval sets without profile metadata).
+    space_time_convention : str or None
+        Label for the space-time accounting convention.  Required on every
+        result artifact so a table cannot exist without stating which
+        convention produced it.
     """
 
-    distance: int
-    rounds: int
-    error_prob: float
+    key: ExperimentKey
     n_shots_used: int
     decoder_results: dict[str, DecoderPointResult]
     mcnemar_results: dict[str, McNemarResult]
     stopping: StoppingDecision
     outcome: EvalOutcome
+    metric_policy: MetricPolicy | None = None
+    observable_names: tuple[str, ...] | None = None
+    space_time_convention: str | None = None
+
+    @property
+    def operation(self) -> str:
+        """Logical operation this point scores."""
+        return self.key.operation
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self.key.distance
+
+    @property
+    def rounds(self) -> int:
+        """Syndrome measurement rounds."""
+        return self.key.rounds
+
+    @property
+    def error_prob(self) -> float:
+        """Physical error probability."""
+        return self.key.error_prob
 
 
 @dataclass(slots=True)
@@ -174,17 +279,13 @@ class EvalReport:
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Eval set loading
-# ---------------------------------------------------------------------------
-
-
 def load_eval_set(eval_dir: Path) -> EvalSet:
     """Load a frozen evaluation set from a directory.
 
     Supports two formats:
     - Compressed npz (``data.npz`` with keys: syndromes, observables,
-      detector_coords) + ``manifest.json``
+      detector_coords, and optionally phase_ids/patch_ids/seam_mask for
+      phased representations) + ``manifest.json``
     - Individual npy files (``syndromes.npy``, ``observables.npy``,
       ``detector_coords.npy``) + ``manifest.json``
 
@@ -200,9 +301,12 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
     Raises
     ------
     FileNotFoundError
-        If required files are missing.
+        If required files are missing, or if the circuit the set names cannot
+        be reached to resolve its operation.
     ValueError
-        If manifest is missing required fields or shapes mismatch.
+        If manifest is missing required fields, shapes mismatch, the set
+        declares an operation its circuit does not belong to, or the manifest
+        declares a representation whose metadata is not present.
     """
     manifest_path = eval_dir / "manifest.json"
     if not manifest_path.exists():
@@ -210,12 +314,29 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+    phase_ids: np.ndarray | None = None
+    phase_names: tuple[str, ...] | None = None
+    patch_ids: np.ndarray | None = None
+    seam_mask: np.ndarray | None = None
+
     npz_path = eval_dir / "data.npz"
     if npz_path.exists():
         data = np.load(npz_path)
         syndromes = data["syndromes"].astype(np.uint8, copy=False)
         observables = data["observables"].astype(np.uint8, copy=False)
         detector_coords = data["detector_coords"].astype(np.float64, copy=False)
+
+        if "phase_ids" in data:
+            phase_ids = data["phase_ids"].astype(np.intp, copy=False)
+            patch_ids = data["patch_ids"].astype(np.intp, copy=False)
+            seam_mask = data["seam_mask"].astype(np.bool_, copy=False)
+            raw_names = manifest.get("phase_names")
+            if raw_names is None:
+                raise ValueError(
+                    f"Eval set {eval_dir} has phase_ids in data but manifest "
+                    f"lacks phase_names"
+                )
+            phase_names = tuple(raw_names)
     else:
         syn_path = eval_dir / "syndromes.npy"
         obs_path = eval_dir / "observables.npy"
@@ -236,7 +357,36 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
         if f not in manifest:
             raise ValueError(f"Manifest missing required field '{f}': {manifest_path}")
 
-    return EvalSet(
+    # Validate: if the manifest declares a representation that needs phased
+    # metadata, the stored data must provide it.
+    rep_version = manifest.get("representation_version", "spatial")
+    if rep_version != "spatial" and phase_ids is None:
+        raise ValueError(
+            f"Eval set {eval_dir} declares representation {rep_version!r} but "
+            f"lacks the phased metadata arrays (phase_ids, patch_ids, seam_mask) "
+            f"that representation requires"
+        )
+
+    raw_obs_names = manifest.get("observable_names")
+    obs_names: tuple[str, ...] | None = (
+        tuple(raw_obs_names) if raw_obs_names is not None else None
+    )
+
+    import stim
+
+    from sampling.graph import extract_circuit_metadata
+
+    dem_weights: np.ndarray | None = None
+    circuit_path = Path(manifest["circuit_file"])
+    if circuit_path.exists():
+        circuit = stim.Circuit.from_file(str(circuit_path))
+        if circuit.num_detectors == syndromes.shape[1]:
+            base_meta = extract_circuit_metadata(
+                circuit, manifest["distance"], manifest["rounds"]
+            )
+            dem_weights = base_meta.dem_edge_weights
+
+    eval_set = EvalSet(
         syndromes=syndromes,
         observables=observables,
         detector_coords=detector_coords,
@@ -246,12 +396,17 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
         num_shots=syndromes.shape[0],
         circuit_file=manifest["circuit_file"],
         manifest=manifest,
+        phase_ids=phase_ids,
+        phase_names=phase_names,
+        patch_ids=patch_ids,
+        seam_mask=seam_mask,
+        observable_names=obs_names,
+        dem_edge_weights=dem_weights,
     )
-
-
-# ---------------------------------------------------------------------------
-# Core evaluation
-# ---------------------------------------------------------------------------
+    logger.debug(
+        "Loaded eval set for operation %s from %s", eval_set.operation, eval_dir
+    )
+    return eval_set
 
 
 def evaluate_point(
@@ -261,8 +416,11 @@ def evaluate_point(
     *,
     stopping_baseline: str | None = None,
     check_interval: int = CHECK_INTERVAL,
+    metric_policy: MetricPolicy | None = None,
+    observable_names: tuple[str, ...] | None = None,
+    space_time_convention: str | None = None,
 ) -> EvalPointResult:
-    """Evaluate all decoders on a single (d, p) point with adaptive stopping.
+    """Evaluate all decoders on a single experiment point with adaptive stopping.
 
     Processes shots in increments of ``check_interval``. At each checkpoint,
     evaluates the Haybittle-Peto stopping criterion on the reference decoder
@@ -286,6 +444,17 @@ def evaluate_point(
         are evaluated on the same shots but do not influence stopping.
     check_interval : int
         Shots between adaptive stopping checks.
+    metric_policy : MetricPolicy or None
+        Metric policy from the operation's resolved profile.  Carried on
+        the result so the serializer can gate which metrics to emit.
+        ``None`` preserves backward compatibility with callers that
+        predate the profile registry.
+    observable_names : tuple of str or None
+        Ordered observable names for per-observable breakdown labels.
+        Falls back to ``eval_set.observable_names`` when not given
+        explicitly.
+    space_time_convention : str or None
+        Space-time accounting convention label from the profile.
 
     Returns
     -------
@@ -323,9 +492,15 @@ def evaluate_point(
     n_total = eval_set.num_shots
     n_obs = eval_set.observables.shape[1]
 
+    resolved_obs_names = observable_names or eval_set.observable_names
+
     # Preallocate correctness arrays
     correct_arrays: dict[str, NDArray[np.bool_]] = {
         name: np.empty(n_total, dtype=np.bool_) for name in decoders
+    }
+    # Per-observable correctness for breakdown
+    obs_correct_arrays: dict[str, NDArray[np.bool_]] = {
+        name: np.empty((n_total, n_obs), dtype=np.bool_) for name in decoders
     }
 
     # Determine check points (ceiling division to include tail shots)
@@ -345,7 +520,9 @@ def evaluate_point(
                 predictions = predictions[:, np.newaxis]
             predictions = predictions[:, :n_obs]
 
-            shot_correct = np.all(predictions == chunk_observables, axis=1)
+            per_obs_correct = predictions == chunk_observables
+            obs_correct_arrays[name][start:end] = per_obs_correct
+            shot_correct = np.all(per_obs_correct, axis=1)
             correct_arrays[name][start:end] = shot_correct
 
         shots_processed = end
@@ -379,7 +556,6 @@ def evaluate_point(
         ler_ci = wilson_interval(n_errors, shots_processed)
 
         eps = per_round_ler(ler, eval_set.rounds)
-        # Per-round CI: transform the per-shot CI bounds
         eps_lower = per_round_ler(ler_ci.lower, eval_set.rounds)
         eps_upper = per_round_ler(ler_ci.upper, eval_set.rounds)
         eps_interval = WilsonInterval(
@@ -391,6 +567,29 @@ def evaluate_point(
             alpha=0.05,
         )
 
+        # Per-observable breakdown
+        obs_slice = obs_correct_arrays[name][:shots_processed]
+        per_obs: list[ObservableResult] = []
+        for obs_idx in range(n_obs):
+            obs_col = obs_slice[:, obs_idx]
+            obs_n_err = int(np.sum(~obs_col))
+            obs_ler_val = obs_n_err / shots_processed if shots_processed > 0 else 0.0
+            obs_ci = wilson_interval(obs_n_err, shots_processed)
+            obs_name = (
+                resolved_obs_names[obs_idx]
+                if resolved_obs_names is not None and obs_idx < len(resolved_obs_names)
+                else f"observable_{obs_idx}"
+            )
+            per_obs.append(
+                ObservableResult(
+                    name=obs_name,
+                    n_shots=shots_processed,
+                    n_errors=obs_n_err,
+                    ler=obs_ler_val,
+                    ler_interval=obs_ci,
+                )
+            )
+
         decoder_results[name] = DecoderPointResult(
             decoder_name=name,
             n_shots=shots_processed,
@@ -400,6 +599,7 @@ def evaluate_point(
             per_round_ler=eps,
             per_round_interval=eps_interval,
             correct=correct_slice,
+            per_observable=tuple(per_obs),
         )
 
     # McNemar results for reference decoder vs each other decoder
@@ -414,20 +614,21 @@ def evaluate_point(
     )
 
     return EvalPointResult(
-        distance=eval_set.distance,
-        rounds=eval_set.rounds,
-        error_prob=eval_set.error_prob,
+        key=ExperimentKey(
+            operation=eval_set.operation,
+            distance=eval_set.distance,
+            rounds=eval_set.rounds,
+            error_prob=eval_set.error_prob,
+        ),
         n_shots_used=shots_processed,
         decoder_results=decoder_results,
         mcnemar_results=mcnemar_results,
         stopping=stopping,
         outcome=outcome,
+        metric_policy=metric_policy,
+        observable_names=resolved_obs_names,
+        space_time_convention=space_time_convention,
     )
-
-
-# ---------------------------------------------------------------------------
-# Eval set discovery
-# ---------------------------------------------------------------------------
 
 
 def discover_eval_sets(
@@ -438,10 +639,14 @@ def discover_eval_sets(
 ) -> list[Path]:
     """Discover eval set directories matching the (d, p) naming convention.
 
+    ``eval_dir`` is one operation's evaluation root.  Discovery does not
+    descend into another operation's root, so a sweep cannot span two
+    experiments because a filter was forgotten at the call site.
+
     Parameters
     ----------
     eval_dir : Path
-        Root eval directory containing ``d{d}_p{p_str}/`` subdirs.
+        One operation's eval root, containing ``d{d}_p{p_str}/`` subdirs.
     distances : list[int] or None
         Filter to these distances. None = all.
     error_probs : list[float] or None
@@ -477,26 +682,44 @@ def discover_eval_sets(
     return dirs
 
 
-# ---------------------------------------------------------------------------
-# Serialization helpers
-# ---------------------------------------------------------------------------
-
-
 def _point_to_dict(result: EvalPointResult) -> dict:
-    """Serialize an EvalPointResult to a JSON-compatible dict."""
+    """Serialize an EvalPointResult to a JSON-compatible dict.
+
+    The serializer emits the metrics the metric policy declares and nothing
+    else: per-round LER is included only when the policy's
+    ``include_per_round_ler`` is ``True`` (or when no policy is set, for
+    backward compatibility).
+    """
+    include_per_round = (
+        result.metric_policy is None or result.metric_policy.include_per_round_ler
+    )
+
     decoders = {}
     for name, dr in result.decoder_results.items():
-        decoders[name] = {
+        entry: dict = {
             "n_shots": dr.n_shots,
             "n_errors": dr.n_errors,
             "ler": dr.ler,
             "ler_ci_95": [dr.ler_interval.lower, dr.ler_interval.upper],
-            "per_round_ler": dr.per_round_ler,
-            "per_round_ler_ci_95": [
+        }
+        if include_per_round:
+            entry["per_round_ler"] = dr.per_round_ler
+            entry["per_round_ler_ci_95"] = [
                 dr.per_round_interval.lower,
                 dr.per_round_interval.upper,
-            ],
-        }
+            ]
+        if dr.per_observable:
+            entry["per_observable"] = [
+                {
+                    "name": obs.name,
+                    "n_shots": obs.n_shots,
+                    "n_errors": obs.n_errors,
+                    "ler": obs.ler,
+                    "ler_ci_95": [obs.ler_interval.lower, obs.ler_interval.upper],
+                }
+                for obs in dr.per_observable
+            ]
+        decoders[name] = entry
 
     mcnemar = {}
     for name, mr in result.mcnemar_results.items():
@@ -508,7 +731,8 @@ def _point_to_dict(result: EvalPointResult) -> dict:
             "baseline_wins": mr.baseline_wins,
         }
 
-    return {
+    out: dict = {
+        "operation": result.operation,
         "distance": result.distance,
         "rounds": result.rounds,
         "error_prob": result.error_prob,
@@ -518,3 +742,9 @@ def _point_to_dict(result: EvalPointResult) -> dict:
         "decoders": decoders,
         "mcnemar": mcnemar,
     }
+    if result.space_time_convention is not None:
+        out["space_time_convention"] = result.space_time_convention
+    if result.observable_names is not None:
+        out["observable_names"] = list(result.observable_names)
+
+    return out

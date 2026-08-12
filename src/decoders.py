@@ -17,11 +17,8 @@ import torch
 from numpy.typing import NDArray
 from torch_geometric.data import Batch, Data
 
-from sampling.graph import (
-    CircuitMetadata,
-    build_fired_detector_graph,
-    extract_circuit_metadata,
-)
+from sampling.graph import CircuitMetadata
+from sampling.representation import SPATIAL_MEMORY, DataContract, resolve_builder
 
 
 logger = logging.getLogger(__name__)
@@ -46,11 +43,6 @@ class Decoder(Protocol):
     def name(self) -> str: ...
 
     def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]: ...
-
-
-# ---------------------------------------------------------------------------
-# MWPM decoder (PyMatching from DEM)
-# ---------------------------------------------------------------------------
 
 
 class PyMatchingDecoder:
@@ -89,9 +81,52 @@ class PyMatchingDecoder:
         return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
 
 
-# ---------------------------------------------------------------------------
-# GNN decoder wrapper
-# ---------------------------------------------------------------------------
+class CorrelatedMatchingDecoder:
+    """Two-pass correlated matching decoder via PyMatching 2.
+
+    Exploits hyperedge error decompositions to improve over standard MWPM.
+    The first pass runs ordinary matching; the second re-weights edges using
+    the first-pass solution and re-matches, capturing correlations that plain
+    MWPM misses (e.g. Y errors in the surface code).
+
+    Parameters
+    ----------
+    circuit_path : Path
+        Path to the Stim circuit file.
+
+    References
+    ----------
+    Algorithm: Fowler, arXiv:1310.0863.
+    Implementation: Higgott & Gidney, arXiv:2303.15933 (PyMatching 2).
+    """
+
+    def __init__(self, circuit_path: Path) -> None:
+        circuit = stim.Circuit.from_file(str(circuit_path))
+        dem = circuit.detector_error_model(decompose_errors=True)
+        self._matching = pymatching.Matching.from_detector_error_model(
+            dem, enable_correlations=True
+        )
+        self._num_obs = dem.num_observables
+
+    @property
+    def name(self) -> str:
+        return "correlated"
+
+    def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]:
+        """Decode syndromes via two-pass correlated matching.
+
+        Parameters
+        ----------
+        syndromes : ndarray, shape ``(N, D)``
+            Binary syndrome vectors.
+
+        Returns
+        -------
+        ndarray, shape ``(N, num_observables)``
+            Predicted observable flips.
+        """
+        predictions = self._matching.decode_batch(syndromes, enable_correlations=True)
+        return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
 
 
 class GNNDecoder:
@@ -107,7 +142,7 @@ class GNNDecoder:
     metadata : CircuitMetadata
         Circuit metadata for graph construction.
     threshold : float
-        Decision boundary for logit → binary prediction.
+        Decision boundary for logit => binary prediction.
     device : torch.device
         Device for inference.
     batch_size : int
@@ -121,12 +156,24 @@ class GNNDecoder:
         threshold: float = 0.0,
         device: torch.device | None = None,
         batch_size: int = 256,
+        contract: DataContract = SPATIAL_MEMORY,
     ) -> None:
+        version = contract.version
+        has_phased = metadata.phase_ids is not None
+        if version != "spatial" and not has_phased:
+            raise ValueError(
+                f"Contract requires representation {version!r} but the "
+                f"CircuitMetadata lacks phased fields (phase_ids, patch_ids, "
+                f"seam_mask). The eval set must carry the metadata its "
+                f"representation needs."
+            )
         self._model = model
         self._metadata = metadata
         self._threshold = threshold
         self._device = device or torch.device("cpu")
         self._batch_size = batch_size
+        self._contract = contract
+        self._builder = resolve_builder(version)
         self._model.eval()
 
     @property
@@ -150,7 +197,8 @@ class GNNDecoder:
             Predicted observable flips.
         """
         n_shots = syndromes.shape[0]
-        predictions = np.zeros((n_shots, 1), dtype=np.uint8)
+        num_obs = self._contract.num_observables
+        predictions = np.zeros((n_shots, num_obs), dtype=np.uint8)
         use_amp = self._device.type == "cuda"
 
         for start in range(0, n_shots, self._batch_size):
@@ -162,7 +210,7 @@ class GNNDecoder:
                 if int(syndromes[i].sum()) == 0:
                     continue
 
-                graph = build_fired_detector_graph(syndromes[i], self._metadata)
+                graph = self._builder(syndromes[i], self._metadata)
                 if graph.num_fired == 0:
                     continue
 
@@ -201,70 +249,6 @@ class GNNDecoder:
         return predictions
 
     @classmethod
-    def from_checkpoint(
-        cls,
-        checkpoint_path: Path,
-        circuit_path: Path,
-        distance: int,
-        rounds: int,
-        *,
-        device: torch.device | None = None,
-        batch_size: int = 256,
-    ) -> GNNDecoder:
-        """Construct from a saved training checkpoint.
-
-        Parameters
-        ----------
-        checkpoint_path : Path
-            Path to ``best.pt`` checkpoint file.
-        circuit_path : Path
-            Path to the Stim circuit file (for metadata extraction).
-        distance : int
-            Code distance.
-        rounds : int
-            Syndrome measurement rounds.
-        device : torch.device or None
-            Target device (default: CUDA if available, else CPU).
-        batch_size : int
-            Inference batch size.
-
-        Returns
-        -------
-        GNNDecoder
-        """
-        from model.decoder import build_model
-
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        ckpt = torch.load(checkpoint_path, weights_only=False, map_location=device)
-        cfg = ckpt["config"]
-        threshold = ckpt.get("decision_threshold", 0.0)
-
-        model = build_model(
-            node_dim=cfg.get("node_dim", 6),
-            edge_dim=cfg.get("edge_dim", 5),
-            hidden_dim=cfg.get("hidden_dim", 128),
-            num_layers=cfg.get("num_layers", 6),
-            dropout=0.0,
-        ).to(device)
-
-        state = ckpt["model_state_dict"]
-        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-        model.load_state_dict(state)
-
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        metadata = extract_circuit_metadata(circuit, distance, rounds)
-
-        return cls(
-            model=model,
-            metadata=metadata,
-            threshold=threshold,
-            device=device,
-            batch_size=batch_size,
-        )
-
-    @classmethod
     def from_metadata(
         cls,
         model: torch.nn.Module,
@@ -272,6 +256,7 @@ class GNNDecoder:
         threshold: float = 0.0,
         device: torch.device | None = None,
         batch_size: int = 256,
+        contract: DataContract = SPATIAL_MEMORY,
     ) -> GNNDecoder:
         """Construct from an already-loaded model and metadata.
 
@@ -282,11 +267,13 @@ class GNNDecoder:
         metadata : CircuitMetadata
             Pre-extracted circuit metadata.
         threshold : float
-            Decision threshold for logit → prediction.
+            Decision threshold for logit => prediction.
         device : torch.device or None
             Target device.
         batch_size : int
             Inference batch size.
+        contract : DataContract
+            Data contract (controls output shape and builder selection).
 
         Returns
         -------
@@ -301,12 +288,8 @@ class GNNDecoder:
             threshold=threshold,
             device=device,
             batch_size=batch_size,
+            contract=contract,
         )
-
-
-# ---------------------------------------------------------------------------
-# Belief-Matching decoder
-# ---------------------------------------------------------------------------
 
 
 class BeliefMatchingDecoder:
@@ -375,9 +358,84 @@ class BeliefMatchingDecoder:
         return out
 
 
+class TesseractDecoder:
+    """Near-MLE decoder via beam search over the DEM hypergraph.
+
+    Uses ``tesseract-decoder`` (quantumlib) which performs a prioritized
+    search over detection-event explanations, approaching maximum-likelihood
+    accuracy on surface codes.
+
+    Parameters
+    ----------
+    circuit_path : Path
+        Path to the Stim circuit file.
+    det_beam : int
+        Beam width for the detector-event search.  Larger values give higher
+        accuracy at the cost of runtime.
+
+    References
+    ----------
+    Fowler et al., arXiv:2503.10988.
+    """
+
+    def __init__(
+        self,
+        circuit_path: Path,
+        *,
+        det_beam: int = 50,
+    ) -> None:
+        try:
+            from tesseract_decoder.tesseract import (
+                TesseractConfig,
+            )
+            from tesseract_decoder.tesseract import (
+                TesseractDecoder as _TesseractDecoder,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "Tesseract decoder requires tesseract-decoder: "
+                "pip install tesseract-decoder"
+            ) from exc
+
+        circuit = stim.Circuit.from_file(str(circuit_path))
+        dem = circuit.detector_error_model(decompose_errors=True)
+        self._num_obs = dem.num_observables
+
+        config = TesseractConfig(dem=dem, det_beam=det_beam)
+        self._decoder = _TesseractDecoder(config)
+
+        logger.debug(
+            "TesseractDecoder: %d detectors, det_beam=%d",
+            dem.num_detectors,
+            det_beam,
+        )
+
+    @property
+    def name(self) -> str:
+        return "tesseract"
+
+    def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]:
+        """Decode syndromes via near-MLE beam search.
+
+        Parameters
+        ----------
+        syndromes : ndarray, shape ``(N, D)``
+            Binary syndrome vectors.
+
+        Returns
+        -------
+        ndarray, shape ``(N, num_observables)``
+            Predicted observable flips.
+        """
+        predictions = self._decoder.decode_batch(syndromes.astype(np.bool_))
+        return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
+
+
 __all__ = [
     "BeliefMatchingDecoder",
+    "CorrelatedMatchingDecoder",
     "Decoder",
     "GNNDecoder",
     "PyMatchingDecoder",
+    "TesseractDecoder",
 ]

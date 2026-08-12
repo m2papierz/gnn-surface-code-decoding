@@ -18,21 +18,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# ---------------------------------------------------------------------------
-# Pre-registered protocol constants
-# ---------------------------------------------------------------------------
-
 INTERIM_ALPHA: Final[float] = 0.001
 FINAL_ALPHA: Final[float] = 0.05
 CHECK_INTERVAL: Final[int] = 10_000
 MIN_SHOTS: Final[int] = 10_000
 MAX_SHOTS: Final[int] = 1_000_000
 MIN_ERRORS_PER_DECODER: Final[int] = 100
-
-
-# ---------------------------------------------------------------------------
-# Result types
-# ---------------------------------------------------------------------------
 
 
 class EvalOutcome(enum.StrEnum):
@@ -119,11 +110,6 @@ class StoppingDecision:
     mcnemar: McNemarResult | None
 
 
-# ---------------------------------------------------------------------------
-# McNemar's test
-# ---------------------------------------------------------------------------
-
-
 def mcnemar_test(
     gnn_correct: NDArray[np.bool_],
     baseline_correct: NDArray[np.bool_],
@@ -133,7 +119,7 @@ def mcnemar_test(
 
     Computes the chi-squared statistic on the off-diagonal cells of the 2x2
     contingency table (GNN correct vs baseline correct). No continuity
-    correction — the protocol requires >=100 errors per decoder, ensuring
+    correction - the protocol requires >=100 errors per decoder, ensuring
     sufficient off-diagonal mass for the chi-squared approximation.
 
     Parameters
@@ -189,11 +175,6 @@ def mcnemar_test(
         gnn_wins=b,
         baseline_wins=c,
     )
-
-
-# ---------------------------------------------------------------------------
-# Wilson score interval
-# ---------------------------------------------------------------------------
 
 
 def wilson_interval(
@@ -257,11 +238,6 @@ def wilson_interval(
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-round logical error rate
-# ---------------------------------------------------------------------------
-
-
 def per_round_ler(ler: float, rounds: int) -> float:
     """
     Convert per-shot LER to per-round LER (epsilon).
@@ -296,11 +272,6 @@ def per_round_ler(ler: float, rounds: int) -> float:
         return 1.0
 
     return 1.0 - (1.0 - ler) ** (1.0 / rounds)
-
-
-# ---------------------------------------------------------------------------
-# Adaptive early stopping
-# ---------------------------------------------------------------------------
 
 
 def adaptive_stop(

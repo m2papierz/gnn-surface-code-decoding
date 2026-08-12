@@ -1,7 +1,7 @@
 """Tests for the evaluation harness: evaluator + decoder wrappers.
 
 Exercises the core evaluate_point function, eval set loading, discovery,
-and the dry-run path on the committed CI shard — all CPU-only, no trained
+and the dry-run path on the committed CI shard - all CPU-only, no trained
 model required.
 """
 
@@ -28,14 +28,9 @@ from model.decoder import build_model
 from sampling.graph import CircuitMetadata
 
 
-CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard"
-EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "eval"
-CIRCUIT_DIR = Path(__file__).resolve().parent.parent / "data" / "circuits"
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
+EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "eval" / "memory"
+CIRCUIT_DIR = Path(__file__).resolve().parent.parent / "data" / "circuits" / "memory"
 
 
 @pytest.fixture(scope="module")
@@ -49,11 +44,13 @@ def ci_shard_eval_set() -> EvalSet:
 @pytest.fixture(scope="module")
 def circuit_metadata(ci_shard_eval_set: EvalSet) -> CircuitMetadata:
     """Build CircuitMetadata from the CI shard."""
+    n_det = ci_shard_eval_set.syndromes.shape[1]
     return CircuitMetadata(
         detector_coords=ci_shard_eval_set.detector_coords,
         distance=ci_shard_eval_set.distance,
         rounds=ci_shard_eval_set.rounds,
-        num_detectors=ci_shard_eval_set.syndromes.shape[1],
+        num_detectors=n_det,
+        dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
     )
 
 
@@ -109,11 +106,6 @@ class ErrorDecoder:
         return result
 
 
-# ---------------------------------------------------------------------------
-# Test: EvalSet loading
-# ---------------------------------------------------------------------------
-
-
 class TestLoadEvalSet:
     """Test eval set loading from both npy and npz formats."""
 
@@ -155,11 +147,6 @@ class TestLoadEvalSet:
         )
         with pytest.raises(ValueError, match="required field"):
             load_eval_set(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Test: discover_eval_sets
-# ---------------------------------------------------------------------------
 
 
 class TestDiscoverEvalSets:
@@ -228,11 +215,6 @@ class TestDiscoverEvalSets:
         assert len(dirs) == 2
 
 
-# ---------------------------------------------------------------------------
-# Test: evaluate_point
-# ---------------------------------------------------------------------------
-
-
 class TestEvaluatePoint:
     """Core evaluation function with fake decoders."""
 
@@ -254,19 +236,19 @@ class TestEvaluatePoint:
             rounds=3,
             error_prob=0.01,
             num_shots=n,
-            circuit_file="data/circuits/d3_r3_p0_01.stim",
+            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
             manifest={
                 "distance": 3,
                 "rounds": 3,
                 "error_prob": 0.01,
-                "circuit_file": "data/circuits/d3_r3_p0_01.stim",
+                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
             },
         )
 
     def test_two_identical_decoders_resolved_parity(
         self, simple_eval_set: EvalSet
     ) -> None:
-        """Two decoders that produce identical predictions → parity."""
+        """Two decoders that produce identical predictions => parity."""
         decoders = {"a": FakeDecoder("a"), "b": FakeDecoder("b")}
         result = evaluate_point(
             simple_eval_set,
@@ -285,7 +267,7 @@ class TestEvaluatePoint:
     def test_perfect_vs_error_resolved_different(
         self, simple_eval_set: EvalSet
     ) -> None:
-        """Perfect vs always-wrong decoder → resolved-different."""
+        """Perfect vs always-wrong decoder => resolved-different."""
         obs = simple_eval_set.observables
         decoders = {
             "perfect": PerfectDecoder(obs, "perfect"),
@@ -363,12 +345,12 @@ class TestEvaluatePoint:
             rounds=3,
             error_prob=0.01,
             num_shots=n,
-            circuit_file="data/circuits/d3_r3_p0_01.stim",
+            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
             manifest={
                 "distance": 3,
                 "rounds": 3,
                 "error_prob": 0.01,
-                "circuit_file": "data/circuits/d3_r3_p0_01.stim",
+                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
             },
         )
         result = evaluate_point(
@@ -392,12 +374,12 @@ class TestEvaluatePoint:
             rounds=3,
             error_prob=0.01,
             num_shots=n,
-            circuit_file="data/circuits/d3_r3_p0_01.stim",
+            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
             manifest={
                 "distance": 3,
                 "rounds": 3,
                 "error_prob": 0.01,
-                "circuit_file": "data/circuits/d3_r3_p0_01.stim",
+                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
             },
         )
         # 'ref': always predicts correctly (0 errors)
@@ -443,11 +425,6 @@ class TestEvaluatePoint:
             )
 
 
-# ---------------------------------------------------------------------------
-# Test: EvalReport serialization
-# ---------------------------------------------------------------------------
-
-
 class TestEvalReport:
     def test_save_and_load(self, tmp_path: Path) -> None:
         report = EvalReport(metadata={"mode": "test"})
@@ -455,11 +432,6 @@ class TestEvalReport:
         report.save(out)
         loaded = json.loads(out.read_text())
         assert loaded["metadata"]["mode"] == "test"
-
-
-# ---------------------------------------------------------------------------
-# Test: PyMatchingDecoder
-# ---------------------------------------------------------------------------
 
 
 class TestPyMatchingDecoder:
@@ -490,11 +462,6 @@ class TestPyMatchingDecoder:
         syndromes = rng.integers(0, 2, size=(50, 24), dtype=np.uint8)
         result = decoder.decode_batch(syndromes)
         assert set(np.unique(result)).issubset({0, 1})
-
-
-# ---------------------------------------------------------------------------
-# Test: GNNDecoder
-# ---------------------------------------------------------------------------
 
 
 class TestGNNDecoder:
@@ -532,13 +499,8 @@ class TestGNNDecoder:
         assert set(np.unique(result)).issubset({0, 1})
 
 
-# ---------------------------------------------------------------------------
-# Test: Dry-run end-to-end (CI shard)
-# ---------------------------------------------------------------------------
-
-
 class TestDryRunEndToEnd:
-    """Full pipeline on CI shard: load → decode → evaluate → report."""
+    """Full pipeline on CI shard: load => decode => evaluate => report."""
 
     def test_dry_run_pipeline(
         self,
