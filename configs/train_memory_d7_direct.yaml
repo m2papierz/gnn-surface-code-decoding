@@ -13,10 +13,10 @@ operation: "memory"
 # Data paths
 output_dir: "./outputs/runs"
 
-# Distance filter: train on d=7 only.
+# Distance filter
 distances: [7]
 
-# Model architecture (same as d=3/d=5)
+# Model architecture
 model:
   hidden_dim: 192
   num_layers: 8
@@ -28,8 +28,7 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 50M for d=7 (significantly harder than d=5).
-# Adjust upward if convergence trend is positive but not converged.
+# Sample budget
 sample_budget: 50_000_000
 
 # Validate every 500k samples (wider interval for longer run).
@@ -50,9 +49,8 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping: 15 checks without improvement (7.5M samples of
-# patience at val_interval_samples=500k).
-patience: 15
+# Early stopping
+patience: 30
 
 # Reproducibility
 seed: 42

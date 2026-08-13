@@ -11,10 +11,10 @@ operation: "memory"
 # Data paths
 output_dir: "./outputs/runs"
 
-# Distance filter: train on d=3 only.
+# Distance filter
 distances: [3]
 
-# Model architecture (same as full config)
+# Model architecture
 model:
   hidden_dim: 192
   num_layers: 8
@@ -26,7 +26,7 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 5M for d=3 with DEM edge weights.
+# Sample budget
 sample_budget: 5_000_000
 
 # Validate every 50k samples for frequent monitoring.
@@ -47,8 +47,8 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping: 15 checks without improvement.
-patience: 15
+# Early stopping
+patience: 30
 
 # Reproducibility
 seed: 42

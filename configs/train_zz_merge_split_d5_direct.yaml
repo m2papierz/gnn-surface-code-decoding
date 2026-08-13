@@ -12,10 +12,10 @@ operation: "zz_merge_split"
 # Data paths
 output_dir: "./outputs/runs"
 
-# Distance filter: train on d=5 only.
+# Distance filter
 distances: [5]
 
-# Model architecture (same as d=3)
+# Model architecture
 model:
   hidden_dim: 192
   num_layers: 8
@@ -27,7 +27,7 @@ optimisation:
   weight_decay: 1.0e-5
   batch_size: 128
 
-# Sample budget: 30M for d=5 (2× memory d=5 budget of 15M).
+# Sample budget
 sample_budget: 30_000_000
 
 # Validate every 200k samples.
@@ -48,9 +48,8 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping: 15 checks without improvement (3M samples of runway
-# at val_interval_samples=200k).
-patience: 15
+# Early stopping
+patience: 30
 
 # Reproducibility
 seed: 42

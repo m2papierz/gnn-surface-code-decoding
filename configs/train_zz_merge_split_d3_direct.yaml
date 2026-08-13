@@ -45,7 +45,7 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping: 30 checks without improvement.
+# Early stopping
 patience: 30
 
 # Single distance

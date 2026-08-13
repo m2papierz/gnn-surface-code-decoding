@@ -13,7 +13,7 @@ operation: "zz_merge_split"
 # Data paths
 output_dir: "./outputs/runs"
 
-# Model architecture (same as per-distance configs)
+# Model architecture
 model:
   hidden_dim: 192
   num_layers: 8
@@ -46,8 +46,8 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping: 15 checks without improvement.
-patience: 15
+# Early stopping
+patience: 30
 
 # Reproducibility
 seed: 42
@@ -63,11 +63,10 @@ curriculum:
       budget: 116_000_000
 
   # Baseline MWPM LER per distance (mean across p values).
-  # TODO: fill from LS16b eval sets after generation.
   mwpm_ler:
-    3: 0.0  # placeholder — measure after LS16b
-    5: 0.0  # placeholder — measure after LS16b
-    7: 0.0  # placeholder — measure after LS16b
+    3: 0.0  # placeholder
+    5: 0.0  # placeholder
+    7: 0.0  # placeholder
 
   # Re-measure per-distance LER gap every 500k samples.
   gap_eval_interval: 500_000
