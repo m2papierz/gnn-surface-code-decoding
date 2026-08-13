@@ -1,0 +1,72 @@
+{
+  "circuit_file": "data/circuits/zz_merge_split/d5_r20_p0_003.stim",
+  "circuit_sha256": "9b7a36ea7ff749e404a55a7c7faf84975fc72f32b871d918860ae19d89e4b01a",
+  "stim_version": "1.15.0",
+  "seed": 4572637508322774953,
+  "master_seed": 20240601,
+  "operation": "zz_merge_split",
+  "distance": 5,
+  "rounds": 20,
+  "error_prob": 0.003,
+  "num_shots": 50000,
+  "num_detectors": 1248,
+  "num_observables": 2,
+  "representation_version": "phased",
+  "observable_names": [
+    "Z_0",
+    "Z_1"
+  ],
+  "sizing_baseline": "correlated",
+  "baseline_errors": 1236,
+  "baseline_ler": 0.02472,
+  "positive_count": 34792,
+  "positive_rate": 0.69584,
+  "target_errors": 400,
+  "shot_cap": 1000000,
+  "target_met": true,
+  "fired_count_stats": {
+    "mean": 56.83294,
+    "median": 56.0,
+    "std": 11.626720558971048,
+    "p99": 86.0,
+    "p99_9": 96.0,
+    "max": 109,
+    "min": 13,
+    "zero_count": 0
+  },
+  "fired_count_buckets": {
+    "0_fired": {
+      "total": 0,
+      "positive": 0,
+      "positive_rate": 0.0
+    },
+    "1_to_3_fired": {
+      "total": 0,
+      "positive": 0,
+      "positive_rate": 0.0
+    },
+    "4_to_10_fired": {
+      "total": 0,
+      "positive": 0,
+      "positive_rate": 0.0
+    },
+    "11_to_30_fired": {
+      "total": 342,
+      "positive": 204,
+      "positive_rate": 0.5964912280701754
+    },
+    "31_plus_fired": {
+      "total": 49658,
+      "positive": 34588,
+      "positive_rate": 0.6965242257038141
+    }
+  },
+  "n_max_p99_9": 96.0,
+  "generation_command": "uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/zz_merge_split --baseline correlated",
+  "phase_names": [
+    "memory",
+    "merge",
+    "merge",
+    "memory"
+  ]
+}
