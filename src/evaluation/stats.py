@@ -1,7 +1,8 @@
 """
 Statistical tests and intervals for paired decoder evaluation.
 
-Provides McNemar's test on the per-shot disagreement matrix, Wilson score
+Provides McNemar's test on the per-shot disagreement matrix, the pooled
+two-proportion z-test for rates measured on independent samples, Wilson score
 confidence intervals for binomial error rates, and an adaptive early-stopping
 function implementing the pre-registered Haybittle-Peto boundary.
 """
@@ -24,6 +25,7 @@ CHECK_INTERVAL: Final[int] = 10_000
 MIN_SHOTS: Final[int] = 10_000
 MAX_SHOTS: Final[int] = 1_000_000
 MIN_ERRORS_PER_DECODER: Final[int] = 100
+MIN_EXPECTED_CELL_COUNT: Final[int] = 5
 
 
 class EvalOutcome(enum.StrEnum):
@@ -85,6 +87,28 @@ class WilsonInterval:
     n_errors: int
     n_total: int
     alpha: float
+
+
+@dataclass(frozen=True, slots=True)
+class TwoProportionResult:
+    """
+    Result of the pooled two-proportion z-test on two independent samples.
+
+    Parameters
+    ----------
+    statistic : float
+        z statistic; positive when the first sample's rate is the higher one.
+    p_value : float
+        Two-sided p-value from the standard normal distribution.
+    min_expected_count : float
+        Smallest expected cell of the 2x2 table under the pooled rate. The
+        normal approximation is conventionally trusted from
+        ``MIN_EXPECTED_CELL_COUNT`` upward (Cochran's rule).
+    """
+
+    statistic: float
+    p_value: float
+    min_expected_count: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +198,64 @@ def mcnemar_test(
         n_discordant=n_discordant,
         gnn_wins=b,
         baseline_wins=c,
+    )
+
+
+def two_proportion_test(
+    n_errors_a: int,
+    n_total_a: int,
+    n_errors_b: int,
+    n_total_b: int,
+) -> TwoProportionResult:
+    """
+    Pooled two-proportion z-test of equal error rates in two independent samples.
+
+    The unpaired counterpart of McNemar's test: it applies when the two rates
+    come from different shots, such as one decoder at two code distances.
+
+    Parameters
+    ----------
+    n_errors_a, n_total_a : int
+        Errors and trials in the first sample.
+    n_errors_b, n_total_b : int
+        Errors and trials in the second sample.
+
+    Returns
+    -------
+    TwoProportionResult
+        z statistic, two-sided p-value, and the smallest expected cell. When
+        the pooled rate is 0 or 1 the samples cannot differ: the statistic is
+        0 and the p-value 1.
+
+    Raises
+    ------
+    ValueError
+        If a sample has no trials, or an error count outside ``[0, n_total]``.
+    """
+    for label, n_errors, n_total in (
+        ("a", n_errors_a, n_total_a),
+        ("b", n_errors_b, n_total_b),
+    ):
+        if n_total <= 0:
+            raise ValueError(f"n_total_{label} must be positive, got {n_total}")
+        if not (0 <= n_errors <= n_total):
+            raise ValueError(
+                f"n_errors_{label} must be in [0, {n_total}], got {n_errors}"
+            )
+
+    pooled = (n_errors_a + n_errors_b) / (n_total_a + n_total_b)
+    min_expected_count = min(n_total_a, n_total_b) * min(pooled, 1.0 - pooled)
+    variance = pooled * (1.0 - pooled) * (1.0 / n_total_a + 1.0 / n_total_b)
+    if variance == 0.0:
+        return TwoProportionResult(
+            statistic=0.0, p_value=1.0, min_expected_count=min_expected_count
+        )
+
+    z = (n_errors_a / n_total_a - n_errors_b / n_total_b) / math.sqrt(variance)
+    # Standard normal two-sided tail: P(|Z| > z) = erfc(|z| / sqrt(2))
+    p_value = math.erfc(abs(z) / math.sqrt(2))
+    return TwoProportionResult(
+        statistic=z, p_value=p_value, min_expected_count=min_expected_count
     )
 
 

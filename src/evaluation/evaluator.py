@@ -682,6 +682,51 @@ def discover_eval_sets(
     return dirs
 
 
+def decoder_result_to_dict(
+    rates: DecoderPointResult, *, include_per_round: bool
+) -> dict:
+    """Serialize one decoder's rates at one point to a JSON-compatible dict.
+
+    Every rate is written with its Wilson 95% interval and the counts behind
+    it.
+
+    Parameters
+    ----------
+    rates : DecoderPointResult
+        The decoder's results at one evaluation point.
+    include_per_round : bool
+        Whether the operation's metric policy admits per-round LER.
+
+    Returns
+    -------
+    dict
+    """
+    entry: dict = {
+        "n_shots": rates.n_shots,
+        "n_errors": rates.n_errors,
+        "ler": rates.ler,
+        "ler_ci_95": [rates.ler_interval.lower, rates.ler_interval.upper],
+    }
+    if include_per_round:
+        entry["per_round_ler"] = rates.per_round_ler
+        entry["per_round_ler_ci_95"] = [
+            rates.per_round_interval.lower,
+            rates.per_round_interval.upper,
+        ]
+    if rates.per_observable:
+        entry["per_observable"] = [
+            {
+                "name": obs.name,
+                "n_shots": obs.n_shots,
+                "n_errors": obs.n_errors,
+                "ler": obs.ler,
+                "ler_ci_95": [obs.ler_interval.lower, obs.ler_interval.upper],
+            }
+            for obs in rates.per_observable
+        ]
+    return entry
+
+
 def _point_to_dict(result: EvalPointResult) -> dict:
     """Serialize an EvalPointResult to a JSON-compatible dict.
 
@@ -694,32 +739,10 @@ def _point_to_dict(result: EvalPointResult) -> dict:
         result.metric_policy is None or result.metric_policy.include_per_round_ler
     )
 
-    decoders = {}
-    for name, dr in result.decoder_results.items():
-        entry: dict = {
-            "n_shots": dr.n_shots,
-            "n_errors": dr.n_errors,
-            "ler": dr.ler,
-            "ler_ci_95": [dr.ler_interval.lower, dr.ler_interval.upper],
-        }
-        if include_per_round:
-            entry["per_round_ler"] = dr.per_round_ler
-            entry["per_round_ler_ci_95"] = [
-                dr.per_round_interval.lower,
-                dr.per_round_interval.upper,
-            ]
-        if dr.per_observable:
-            entry["per_observable"] = [
-                {
-                    "name": obs.name,
-                    "n_shots": obs.n_shots,
-                    "n_errors": obs.n_errors,
-                    "ler": obs.ler,
-                    "ler_ci_95": [obs.ler_interval.lower, obs.ler_interval.upper],
-                }
-                for obs in dr.per_observable
-            ]
-        decoders[name] = entry
+    decoders = {
+        name: decoder_result_to_dict(dr, include_per_round=include_per_round)
+        for name, dr in result.decoder_results.items()
+    }
 
     mcnemar = {}
     for name, mr in result.mcnemar_results.items():

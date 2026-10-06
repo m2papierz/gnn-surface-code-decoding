@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import stim
+from numpy.typing import NDArray
+
+from sampling.dem import DemMechanisms, read_dem_mechanisms
 
 
 NODE_DIM: int = 6
@@ -18,6 +21,28 @@ NODE_DIM: int = 6
 
 EDGE_DIM: int = 6
 """Edge feature dimensionality: dx, dy, dt, euclidean, chebyshev, dem_weight."""
+
+
+def complete_graph_edge_count[CountT: (int, NDArray[np.int64])](
+    num_fired: CountT,
+) -> CountT:
+    """Directed edges of the complete graph over the fired detectors.
+
+    The one definition of the graph's size law: ``FiredDetectorGraph``
+    validates against it, and anything that sizes a graph without building
+    it calls it.
+
+    Parameters
+    ----------
+    num_fired : int or ndarray of int64
+        Fired-detector count of one shot, or of each shot in a batch.
+
+    Returns
+    -------
+    int or ndarray of int64
+        ``N * (N - 1)``, in the form the count was given.
+    """
+    return num_fired * (num_fired - 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +185,7 @@ class FiredDetectorGraph:
 
     def __post_init__(self) -> None:
         N = self.num_fired
-        E = N * (N - 1) if N > 1 else 0
+        E = complete_graph_edge_count(N)
 
         if self.node_features.shape != (N, self.node_dim):
             raise ValueError(
@@ -182,6 +207,27 @@ class FiredDetectorGraph:
             )
 
 
+def dem_weight_mechanisms(mechanisms: DemMechanisms) -> NDArray[np.bool_]:
+    """Select the mechanisms the ``dem_weight`` edge feature is built from.
+
+    A mechanism contributes when it flips exactly two detectors in total.
+    That admits every undecomposed two-detector mechanism and, among the
+    decomposed ones, only those listed as two single-detector components.
+    Single-detector mechanisms and every wider decomposition contribute
+    nothing.
+
+    Parameters
+    ----------
+    mechanisms : DemMechanisms
+        Mechanisms of a decomposed detector error model.
+
+    Returns
+    -------
+    ndarray, shape ``(M,)``, bool
+    """
+    return mechanisms.num_detectors == 2
+
+
 def _extract_dem_weights(circuit: stim.Circuit) -> np.ndarray:
     """Extract pairwise detector error probabilities from the DEM.
 
@@ -198,24 +244,21 @@ def _extract_dem_weights(circuit: stim.Circuit) -> np.ndarray:
         error mechanism.  Multiple mechanisms affecting the same pair
         are combined via ``p = 1 - prod(1 - p_k)``.
     """
-    dem = circuit.detector_error_model(decompose_errors=True)
+    mechanisms = read_dem_mechanisms(
+        circuit.detector_error_model(decompose_errors=True)
+    )
+    selected = dem_weight_mechanisms(mechanisms)
+    start = mechanisms.detector_offsets[:-1][selected]
+    first = mechanisms.detectors[start]
+    second = mechanisms.detectors[start + 1]
+    log_survival = np.log1p(-mechanisms.probability[selected])
+
     num_det = circuit.num_detectors
     log_complement = np.zeros((num_det, num_det), dtype=np.float64)
-
-    for instruction in dem.flattened():
-        if instruction.type != "error":
-            continue
-        p = instruction.args_copy()[0]
-        if p == 0.0:
-            continue
-        dets = [
-            t.val for t in instruction.targets_copy() if t.is_relative_detector_id()
-        ]
-        if len(dets) == 2:
-            i, j = dets
-            lp = np.log1p(-p)
-            log_complement[i, j] += lp
-            log_complement[j, i] += lp
+    # ``np.add.at`` accumulates in mechanism order, so each cell sums its
+    # terms in the order the DEM lists them.
+    np.add.at(log_complement, (first, second), log_survival)
+    np.add.at(log_complement, (second, first), log_survival)
 
     return 1.0 - np.exp(log_complement)
 

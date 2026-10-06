@@ -243,6 +243,13 @@ def _register_builders() -> None:
     _BUILDER_REGISTRY["phased"] = build_phased_detector_graph
 
 
+def registered_representations() -> tuple[RepresentationDescriptor, ...]:
+    """Return every registered representation descriptor, ordered by version."""
+    return tuple(
+        _DESCRIPTOR_REGISTRY[version] for version in sorted(_DESCRIPTOR_REGISTRY)
+    )
+
+
 def resolve_descriptor(version: str) -> RepresentationDescriptor:
     """Look up the representation descriptor for a version tag.
 
@@ -305,6 +312,7 @@ __all__ = [
     "SUPPORTED_FAST_PATH_VERSIONS",
     "SPATIAL",
     "SPATIAL_MEMORY",
+    "registered_representations",
     "resolve_builder",
     "resolve_descriptor",
 ]
