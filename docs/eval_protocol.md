@@ -166,3 +166,61 @@ run:
    protocol, or clearly marked as produced under different rules.
 4. The Trurlic decision graph is updated (`update_decision` with
    `mode="supersede"`).
+
+### 9.1 Amendment of 2026-10-06 — scaling diagnostics
+
+Two rules, added for `scripts/diagnose_scaling.py`. Both were fixed as recorded
+decisions and in code before the first diagnostics run, and no parameter of
+either was changed after a result existed. Nothing in §1–§8 changes for any
+comparison that involves the GNN, Belief-Matching or Tesseract.
+
+**A. Baseline-only comparisons run the final analysis once, on every shot.**
+When every decoder in a comparison is a classical baseline whose full-set
+decode is cheap — MWPM against correlated matching — the frozen set is decoded
+in full and only step 3 of §2 is applied: McNemar at α = 0.05, behind the
+100-error floor of §4, with the three outcomes of §3. There are no interim
+looks.
+
+Reason: the interim boundary exists to stop paying for an expensive decoder.
+Here it would save nothing, and the error rates would come from a truncated
+sample whose size the comparison's own p-value chose. Those rates are not
+display-only — they feed rule B and are the measured baseline rates that later
+tasks read. One look spends less α than the sequence it replaces, so the
+registered level holds. The comparison is oriented with correlated matching as
+the reference and MWPM as the compared decoder, and the artifact names both
+roles.
+
+Decision: `baseline-only-diagnostics-decode-every-frozen-shot-and-run`.
+
+**B. Sub-threshold is decided by a test between distances, per decoder.**
+For one operation, one decoder and one physical error rate, the distances are
+independent samples — different circuits, different shots — so the paired test
+of §1 does not apply. The rule:
+
+| Element | Value |
+|---------|-------|
+| Metric | Per-shot LER, a shot being wrong when any observable is wrong |
+| Step | Each pair of consecutive distances d < d′ |
+| Test per step | Pooled two-proportion z-test, two-sided, α = 0.05 |
+| Validity floor | Smallest expected cell under the pooled rate ≥ 5 (Cochran) |
+| Step verdict | `decreasing` if the test rejects and LER(d′) < LER(d); `increasing` if it rejects the other way; `unresolved` otherwise |
+| `sub-threshold` | At least one step, and every step `decreasing` |
+| `above-threshold` | At least one step, and every step `increasing` |
+| `undetermined` | Anything else: mixed steps, an unresolved step, a single distance |
+
+The rule is applied to each decoder separately, because a threshold belongs to
+a decoder; which decoder's verdict governs a gate is stated where that gate is
+defined. No correction is applied across steps or points: requiring every step
+to reject is already conservative. The 100-error floor of §4 is not reused
+here — it protects McNemar's off-diagonal cells, and a larger distance making
+few errors is the evidence of being sub-threshold, not a lack of it. Wilson
+intervals are shown beside every rate and decide nothing. A physical error
+rate reported `undetermined` cannot serve as a sub-threshold point for a gate.
+
+Decision: `sub-threshold-per-operation-decoder-p-pooled-two-proportion`.
+Code: `src/evaluation/distance_scaling.py`, `src/evaluation/stats.py`
+(`two_proportion_test`). Every artifact produced under these rules restates
+them in its `rules` block.
+
+No earlier result was produced under different rules for either comparison, so
+nothing is re-evaluated.

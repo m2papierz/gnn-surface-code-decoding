@@ -194,6 +194,14 @@ For each shot, run the model on (graph, syndrome), threshold the logit at 0 => p
 
 See [`docs/eval_protocol.md`](eval_protocol.md) for the full pre-registered protocol: adaptive stopping, McNemar test, and parity decisions.
 
+### Scaling and baseline diagnostics
+
+```bash
+uv run scripts/diagnose_scaling.py
+```
+
+Measures every frozen evaluation point without a model: fired detectors and edges per graph over all shots, the DEM's probability mass by mechanism class with the share `dem_weight` carries, and MWPM against correlated matching on every shot.  Across distances it applies the sub-threshold rule of `evaluation.distance_scaling` per operation and decoder.  The run samples nothing, so two runs write the same bytes; a committed circuit without a frozen set fails it.
+
 ## Dataset interface
 
 The training and evaluation code consumes data from `StreamingSurfaceCodeDataset` (defined in `dataset.py`), which streams samples via the `sampling` module.
@@ -240,4 +248,6 @@ Edges connect every pair of fired detectors (complete graph, both directions).  
 | 4 | `chebyshev` | `max(\|dx\|, \|dy\|, \|dt\|)` | [0, 1] | Chebyshev distance in normalised space |
 | 5 | `dem_weight` | from DEM | [0, 1] | Pairwise detector error probability from the detector error model |
 
-The `dem_weight` feature encodes the combined probability that detectors `src` and `dst` are both flipped by the same error mechanism, extracted from `circuit.detector_error_model(decompose_errors=True)`.  Multiple mechanisms affecting the same pair are combined via `p = 1 - ∏(1 - pₖ)`.  Every classical baseline decoder (MWPM, correlated matching, belief-matching, Tesseract) constructs its decoding graph from the DEM; this feature gives the GNN the same information.
+The `dem_weight` feature encodes the combined probability that detectors `src` and `dst` are both flipped by the same error mechanism, extracted from `circuit.detector_error_model(decompose_errors=True)`.  Multiple mechanisms affecting the same pair are combined via `p = 1 - ∏(1 - pₖ)`.
+
+A mechanism contributes when it flips exactly two detectors in total (`sampling.graph.dem_weight_mechanisms`): every undecomposed two-detector mechanism, and a decomposed one only when it is listed as two single-detector components.  Single-detector (boundary) mechanisms and every wider decomposition are not represented.  Every classical baseline decoder (MWPM, correlated matching, belief-matching, Tesseract) builds its decoding graph from the whole DEM, so this feature gives the GNN part of that information, not all of it; the share of the DEM's probability mass it carries is recorded per circuit by `scripts/diagnose_scaling.py`.

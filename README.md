@@ -70,7 +70,13 @@ uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --sanity
 uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --dry-run
 ```
 
-See [`docs/eval_protocol.md`](docs/eval_protocol.md) for the pre-registered stopping rule, McNemar test, and Wilson confidence intervals.
+Record the scaling and baseline diagnostics of every frozen evaluation point - graph size, the detector error model's probability mass by mechanism class, MWPM against correlated matching, and which physical error rates are sub-threshold for each decoder:
+
+```bash
+uv run scripts/diagnose_scaling.py           # writes outputs/results/ls23_scaling_diagnostics.json
+```
+
+See [`docs/eval_protocol.md`](docs/eval_protocol.md) for the pre-registered stopping rule, McNemar test, Wilson confidence intervals, and the sub-threshold rule.
 
 ## Deployment and benchmarking
 

@@ -95,6 +95,7 @@ data/ci_shard/<operation>/
 ```
 src/sampling/
 ├── __init__.py
+├── dem.py             # Error mechanisms of a decomposed DEM, read once per circuit
 ├── experiment.py      # Experiment identity (operation, distance, rounds, p)
 ├── graph.py           # DEM => DetectorGraph conversion (incl. observable_flips)
 ├── logical_ops.py     # tqec BlockGraph => committed circuit + manifest
