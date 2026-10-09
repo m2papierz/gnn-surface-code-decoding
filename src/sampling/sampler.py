@@ -100,21 +100,25 @@ class ExperimentPoint(CircuitSetting):
 def settings_from_circuit_dir(
     circuit_dir: Path,
     *,
+    operation: str,
     distances: Sequence[int] | None = None,
     error_probs: Sequence[float] | None = None,
 ) -> list[ExperimentPoint]:
-    """Discover experiment points from committed ``.stim`` files.
+    """Discover one operation's experiment points from committed ``.stim`` files.
 
     Every ``.stim`` file directly in ``circuit_dir`` is resolved to its
     ``(operation, d, r, p)`` identity by the manifest beside it; a filename
-    carries none.  Discovery does not descend into subdirectories, so a root
-    holding one operation's circuits is discovered by pointing this function
-    at that root.
+    carries none.  Discovery does not descend into subdirectories, and every
+    circuit in the root must belong to ``operation`` - before any filter, so
+    a root of another operation cannot reach a sampler under this one's
+    contract.
 
     Parameters
     ----------
     circuit_dir : Path
         Directory containing circuit files.
+    operation : str
+        Operation every circuit in ``circuit_dir`` must belong to.
     distances : sequence of int, optional
         Include only these code distances.  ``None`` means all.
     error_probs : sequence of float, optional
@@ -123,7 +127,7 @@ def settings_from_circuit_dir(
     Returns
     -------
     list[ExperimentPoint]
-        Sorted by ``(operation, distance, rounds, error_prob)``.
+        Sorted by ``(distance, rounds, error_prob)``.
 
     Raises
     ------
@@ -132,53 +136,67 @@ def settings_from_circuit_dir(
     FileNotFoundError
         If a circuit in the directory carries no manifest.
     ValueError
-        If no matching circuit files are found, or if two circuits in the
-        directory resolve to the same experiment key.
+        If a circuit in the directory belongs to another operation (naming
+        each such circuit and its operation), if two circuits resolve to the
+        same experiment key, or if no circuit matches the filters.
     """
     circuit_dir = Path(circuit_dir)
     if not circuit_dir.is_dir():
         raise NotADirectoryError(f"Circuit directory does not exist: {circuit_dir}")
 
+    keys = _operation_keys(circuit_dir, operation)
+
     dist_set = set(distances) if distances is not None else None
     prob_set = {round(p, 12) for p in error_probs} if error_probs is not None else None
-
-    points: list[ExperimentPoint] = []
-    claimed: dict[ExperimentKey, Path] = {}
-    for f in sorted(circuit_dir.glob("*.stim")):
-        key = circuit_key(f)
-
-        # Two circuits under one identity would be sampled as two settings and
-        # silently double the weight of that point in the training mixture.
-        if key in claimed:
-            raise ValueError(
-                f"{f} and {claimed[key]} both resolve to the same experiment "
-                f"point ({key}); an identity names exactly one circuit"
-            )
-        claimed[key] = f
-
-        if dist_set is not None and key.distance not in dist_set:
-            continue
-        if prob_set is not None and round(key.error_prob, 12) not in prob_set:
-            continue
-
-        points.append(
-            ExperimentPoint(
-                circuit_path=f,
-                distance=key.distance,
-                rounds=key.rounds,
-                error_prob=key.error_prob,
-                operation=key.operation,
-            )
+    points = [
+        ExperimentPoint(
+            circuit_path=path,
+            distance=key.distance,
+            rounds=key.rounds,
+            error_prob=key.error_prob,
+            operation=key.operation,
         )
-
+        for path, key in keys.items()
+        if (dist_set is None or key.distance in dist_set)
+        and (prob_set is None or round(key.error_prob, 12) in prob_set)
+    ]
     if not points:
         raise ValueError(
             f"No matching circuit files in {circuit_dir} "
             f"(distances={distances}, error_probs={error_probs})"
         )
 
-    points.sort(key=lambda pt: (pt.operation, pt.distance, pt.rounds, pt.error_prob))
+    points.sort(key=lambda pt: (pt.distance, pt.rounds, pt.error_prob))
     return points
+
+
+def _operation_keys(circuit_dir: Path, operation: str) -> dict[Path, ExperimentKey]:
+    """Key of every circuit in ``circuit_dir``, each one of ``operation``'s."""
+    keys = {path: circuit_key(path) for path in sorted(circuit_dir.glob("*.stim"))}
+
+    foreign = [
+        f"{path} declares {key.operation!r}"
+        for path, key in keys.items()
+        if key.operation != operation
+    ]
+    if foreign:
+        raise ValueError(
+            f"Circuit root {circuit_dir} is discovered for operation "
+            f"{operation!r}, but {len(foreign)} circuit(s) belong to another: "
+            f"{'; '.join(foreign)}"
+        )
+
+    # Two circuits under one identity would be sampled as two settings and
+    # silently double the weight of that point in the training mixture.
+    claimed: dict[ExperimentKey, Path] = {}
+    for path, key in keys.items():
+        if key in claimed:
+            raise ValueError(
+                f"{path} and {claimed[key]} both resolve to the same experiment "
+                f"point ({key}); an identity names exactly one circuit"
+            )
+        claimed[key] = path
+    return keys
 
 
 class WorkerSampler:
@@ -198,6 +216,9 @@ class WorkerSampler:
     metadata_extractor : MetadataExtractor
         The operation's extractor, building the metadata its representation's
         builder reads.
+    num_observables : int
+        Observable count of the contract the shots are labelled under; every
+        circuit is extracted against it.
     weights : ndarray, shape ``(len(settings),)``, optional
         Per-setting sampling probabilities.  If ``None``, settings are
         sampled uniformly.  Weights are normalized internally.
@@ -209,6 +230,7 @@ class WorkerSampler:
         worker_seed: int,
         *,
         metadata_extractor: MetadataExtractor,
+        num_observables: int,
         weights: np.ndarray | None = None,
     ) -> None:
         if not settings:
@@ -237,7 +259,7 @@ class WorkerSampler:
             circuit = stim.Circuit.from_file(str(s.circuit_path))
             sampler_seed = stable_seed("sampler", f"idx={i}", base=worker_seed)
             compiled = circuit.compile_detector_sampler(seed=sampler_seed)
-            meta = metadata_extractor(s.circuit_path)
+            meta = metadata_extractor(s.circuit_path, num_observables=num_observables)
 
             self._samplers.append(compiled)
             self._metadata.append(meta)

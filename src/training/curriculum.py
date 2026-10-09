@@ -424,7 +424,9 @@ class CurriculumTrainer:
         self._run_dir.mkdir(parents=True, exist_ok=True)
         self._best_path = self._run_dir / "best.pt"
 
-        self._all_settings = settings_from_circuit_dir(self.cfg.circuit_dir)
+        self._all_settings = settings_from_circuit_dir(
+            self.cfg.circuit_dir, operation=self.cfg.operation
+        )
 
         from sampling.profile import resolve_profile
 

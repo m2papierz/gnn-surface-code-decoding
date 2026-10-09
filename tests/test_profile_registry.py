@@ -150,7 +150,7 @@ class TestRegistryRoundTrip:
             root = REPO_ROOT / profile.circuit_root
             if not root.is_dir():
                 pytest.skip(f"Circuit root {root} not present")
-            points = settings_from_circuit_dir(root)
+            points = settings_from_circuit_dir(root, operation=op)
             assert len(points) > 0
             for pt in points:
                 assert pt.operation == profile.operation
@@ -165,7 +165,7 @@ class TestRegistryRoundTrip:
             root = REPO_ROOT / profile.circuit_root
             if not root.is_dir():
                 pytest.skip(f"Circuit root {root} not present")
-            settings = settings_from_circuit_dir(root)
+            settings = settings_from_circuit_dir(root, operation=op)
             contract = profile.data_contract
             ds = StreamingSurfaceCodeDataset(
                 settings=settings,

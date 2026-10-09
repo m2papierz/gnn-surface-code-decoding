@@ -4,7 +4,9 @@ An extractor takes the path of a committed ``.stim`` circuit and returns the
 ``CircuitMetadata`` its representation's builder reads.  Distance and rounds
 come from the manifest beside the circuit, never from the caller, and so does
 a logical operation's layout: the phase windows, seam detectors and patch ids
-its generator derived and validated.
+its generator derived and validated.  The caller supplies only the observable
+count of the contract it runs under, and a circuit with another count is
+refused.
 
 ``build_layout`` is the one place that turns those declarations into a
 per-detector layout.  The generation gate calls it before a circuit is
@@ -253,13 +255,17 @@ def _patch_ids(
     return patches
 
 
-def read_circuit_metadata(circuit_path: Path) -> CircuitMetadata:
+def read_circuit_metadata(
+    circuit_path: Path, *, num_observables: int
+) -> CircuitMetadata:
     """Metadata of a committed circuit with no logical-operation layout.
 
     Parameters
     ----------
     circuit_path : Path
         Path to a ``.stim`` circuit with a manifest beside it.
+    num_observables : int
+        Observable count of the contract the circuit is read under.
 
     Returns
     -------
@@ -272,20 +278,25 @@ def read_circuit_metadata(circuit_path: Path) -> CircuitMetadata:
     FileNotFoundError
         If the circuit carries no manifest.
     ValueError
-        If the manifest is unreadable or declares an invalid key, or if a
+        If the manifest is unreadable or declares an invalid key, if the
+        circuit's observable count is not ``num_observables``, or if a
         detector does not declare exactly ``(x, y, t)``; the message names
         the circuit.
     """
-    return _extract_at_key(circuit_path, circuit_key(circuit_path))
+    return _extract_at_key(circuit_path, circuit_key(circuit_path), num_observables)
 
 
-def read_logical_op_metadata(circuit_path: Path) -> CircuitMetadata:
+def read_logical_op_metadata(
+    circuit_path: Path, *, num_observables: int
+) -> CircuitMetadata:
     """Metadata of a committed logical-operation circuit, layout included.
 
     Parameters
     ----------
     circuit_path : Path
         Path to a ``.stim`` circuit with a manifest beside it.
+    num_observables : int
+        Observable count of the contract the circuit is read under.
 
     Returns
     -------
@@ -299,14 +310,15 @@ def read_logical_op_metadata(circuit_path: Path) -> CircuitMetadata:
         If the circuit carries no manifest.
     ValueError
         If the manifest is unreadable, declares an invalid key, lacks a layout
-        field, or declares a layout its circuit's detectors contradict, or if
-        a detector does not declare exactly ``(x, y, t)``; the message names
+        field, or declares a layout its circuit's detectors contradict, if the
+        circuit's observable count is not ``num_observables``, or if a
+        detector does not declare exactly ``(x, y, t)``; the message names
         the key and the manifest or circuit.
     """
     manifest_path = circuit_manifest_path(circuit_path)
     manifest = read_circuit_manifest(circuit_path)
     key = manifest_key(manifest, manifest_path)
-    metadata = _extract_at_key(circuit_path, key)
+    metadata = _extract_at_key(circuit_path, key, num_observables)
     missing = [field for field in _LAYOUT_FIELDS if field not in manifest]
     if missing:
         raise ValueError(
@@ -342,9 +354,17 @@ def _layout_from_manifest(
     )
 
 
-def _extract_at_key(circuit_path: Path, key: ExperimentKey) -> CircuitMetadata:
-    """Load a circuit and extract its metadata at the key's distance and rounds."""
+def _extract_at_key(
+    circuit_path: Path, key: ExperimentKey, num_observables: int
+) -> CircuitMetadata:
+    """Load a circuit of ``num_observables`` observables; extract at the key's d, r."""
     circuit = stim.Circuit.from_file(str(circuit_path))
+    if circuit.num_observables != num_observables:
+        raise ValueError(
+            f"{key}: circuit {circuit_path} has {circuit.num_observables} "
+            f"observable(s), but the contract it is read under labels "
+            f"{num_observables}"
+        )
     try:
         return extract_circuit_metadata(circuit, key.distance, key.rounds)
     except ValueError as exc:

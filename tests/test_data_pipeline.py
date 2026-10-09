@@ -375,43 +375,50 @@ class TestSettingsFromCircuitDir:
     """Discovery of circuit settings from committed .stim files."""
 
     def test_discovers_all_12(self) -> None:
-        settings = settings_from_circuit_dir(CIRCUITS_DIR)
+        settings = settings_from_circuit_dir(CIRCUITS_DIR, operation="memory")
         assert len(settings) == 12
 
     def test_sorted_by_d_r_p(self) -> None:
-        settings = settings_from_circuit_dir(CIRCUITS_DIR)
+        settings = settings_from_circuit_dir(CIRCUITS_DIR, operation="memory")
         keys = [(s.distance, s.rounds, s.error_prob) for s in settings]
         assert keys == sorted(keys)
 
     def test_filter_by_distance(self) -> None:
-        settings = settings_from_circuit_dir(CIRCUITS_DIR, distances=[3])
+        settings = settings_from_circuit_dir(
+            CIRCUITS_DIR, operation="memory", distances=[3]
+        )
         assert all(s.distance == 3 for s in settings)
         assert len(settings) == 4
 
     def test_filter_by_error_prob(self) -> None:
-        settings = settings_from_circuit_dir(CIRCUITS_DIR, error_probs=[0.01])
+        settings = settings_from_circuit_dir(
+            CIRCUITS_DIR, operation="memory", error_probs=[0.01]
+        )
         assert all(abs(s.error_prob - 0.01) < 1e-12 for s in settings)
         assert len(settings) == 3
 
     def test_filter_both(self) -> None:
         settings = settings_from_circuit_dir(
-            CIRCUITS_DIR, distances=[3, 5], error_probs=[0.003, 0.01]
+            CIRCUITS_DIR,
+            operation="memory",
+            distances=[3, 5],
+            error_probs=[0.003, 0.01],
         )
         assert len(settings) == 4
 
     def test_no_match_raises(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="No matching"):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
 
     def test_circuit_paths_exist(self) -> None:
-        settings = settings_from_circuit_dir(CIRCUITS_DIR)
+        settings = settings_from_circuit_dir(CIRCUITS_DIR, operation="memory")
         for s in settings:
             assert s.circuit_path.exists(), f"Missing: {s.circuit_path}"
 
 
 def _d3_settings() -> list[CircuitSetting]:
     """d=3 settings across all error probs."""
-    return settings_from_circuit_dir(CIRCUITS_DIR, distances=[3])
+    return settings_from_circuit_dir(CIRCUITS_DIR, operation="memory", distances=[3])
 
 
 class TestWorkerSampler:
@@ -424,11 +431,13 @@ class TestWorkerSampler:
             settings,
             worker_seed=12345,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
         s2 = WorkerSampler(
             settings,
             worker_seed=12345,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
 
         for _ in range(20):
@@ -446,11 +455,13 @@ class TestWorkerSampler:
             settings,
             worker_seed=111,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
         s2 = WorkerSampler(
             settings,
             worker_seed=222,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
 
         syndromes_1 = [s1.sample()[0].tobytes() for _ in range(50)]
@@ -464,6 +475,7 @@ class TestWorkerSampler:
             settings,
             worker_seed=42,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
         syn, obs, meta, p = sampler.sample()
 
@@ -481,6 +493,7 @@ class TestWorkerSampler:
             settings,
             worker_seed=99,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
 
         p_counts: dict[float, int] = {}
@@ -499,6 +512,7 @@ class TestWorkerSampler:
                 [],
                 worker_seed=42,
                 metadata_extractor=resolve_profile("memory").metadata_extractor,
+                num_observables=1,
             )
 
 
@@ -657,12 +671,19 @@ class TestCustomMetadataExtractor:
         settings = _d3_settings()
         call_log: list[Path] = []
 
-        def tracking_extractor(circuit_path: Path) -> CircuitMetadata:
+        def tracking_extractor(
+            circuit_path: Path, /, *, num_observables: int
+        ) -> CircuitMetadata:
             call_log.append(circuit_path)
-            return resolve_profile("memory").metadata_extractor(circuit_path)
+            return resolve_profile("memory").metadata_extractor(
+                circuit_path, num_observables=num_observables
+            )
 
         sampler = WorkerSampler(
-            settings, worker_seed=42, metadata_extractor=tracking_extractor
+            settings,
+            worker_seed=42,
+            metadata_extractor=tracking_extractor,
+            num_observables=1,
         )
         assert call_log == [s.circuit_path for s in settings]
 
@@ -680,9 +701,13 @@ class TestCustomMetadataExtractor:
         settings = _d3_settings()
         calls: list[int] = []
 
-        def counting_extractor(circuit_path: Path) -> CircuitMetadata:
+        def counting_extractor(
+            circuit_path: Path, /, *, num_observables: int
+        ) -> CircuitMetadata:
             calls.append(1)
-            return resolve_profile("memory").metadata_extractor(circuit_path)
+            return resolve_profile("memory").metadata_extractor(
+                circuit_path, num_observables=num_observables
+            )
 
         ds = StreamingSurfaceCodeDataset(
             settings=settings,
@@ -727,7 +752,7 @@ class TestCustomMetadataExtractor:
             root = repo_root / profile.circuit_root
             if not root.is_dir():
                 pytest.skip(f"Circuit root {root} not present")
-            settings = settings_from_circuit_dir(root)
+            settings = settings_from_circuit_dir(root, operation=op)
             contract = profile.data_contract
             ds = StreamingSurfaceCodeDataset(
                 settings=settings,

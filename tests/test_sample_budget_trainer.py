@@ -14,6 +14,7 @@ from training import TrainConfig, Trainer
 
 
 MEMORY_CIRCUITS = Path("data/circuits/memory")
+MERGE_SPLIT_CIRCUITS = Path("data/circuits/zz_merge_split")
 
 
 @pytest.fixture()
@@ -115,6 +116,29 @@ class TestSampleBudgetSmoke:
         assert saved["sample_budget"] == 1000
         assert saved["node_dim"] == 6
         assert saved["edge_dim"] == 6
+
+
+class TestCircuitsBelongToTheOperation:
+    """A run samples only its operation's circuits, at its contract's width."""
+
+    def test_a_root_of_another_operation_is_rejected(self, tmp_path) -> None:
+        cfg = _make_config(MERGE_SPLIT_CIRCUITS, tmp_path / "out")
+        with pytest.raises(
+            ValueError,
+            match=r"discovered for operation 'memory'.* declares 'zz_merge_split'",
+        ):
+            Trainer(cfg).fit()
+
+    def test_a_circuit_of_another_observable_count_is_rejected(
+        self, two_observable_memory_root, tmp_path
+    ) -> None:
+        cfg = _make_config(two_observable_memory_root, tmp_path / "out")
+        with pytest.raises(
+            ValueError,
+            match=r"has 2 observable\(s\), but the contract it is read under "
+            r"labels 1",
+        ):
+            Trainer(cfg).fit()
 
 
 class TestEarlyStopping:

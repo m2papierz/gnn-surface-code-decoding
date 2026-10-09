@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
+
+from sampling.experiment import circuit_key, write_circuit_manifest
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -23,3 +31,21 @@ def isolate_float32_matmul_precision() -> Iterator[None]:
         yield
     finally:
         torch.set_float32_matmul_precision(previous)
+
+
+@pytest.fixture
+def two_observable_memory_root(tmp_path: Path) -> Path:
+    """A circuit root whose one circuit declares memory but has two observables.
+
+    A committed merge-split circuit under a memory manifest: discovery for
+    memory admits it, so only extraction can refuse it.
+    """
+    source = min((REPO_ROOT / "data/circuits/zz_merge_split").glob("*.stim"))
+    root = tmp_path / "memory"
+    root.mkdir()
+    circuit_path = root / source.name
+    shutil.copyfile(source, circuit_path)
+    write_circuit_manifest(
+        circuit_path, replace(circuit_key(source), operation="memory"), provenance={}
+    )
+    return root

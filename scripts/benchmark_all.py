@@ -59,8 +59,8 @@ from torch_geometric.data import Batch, Data
 
 from model.decoder import QECDecoder, build_model, collate_graphs
 from model.ops import set_backend
-from sampling.graph import CircuitMetadata, MetadataExtractor
-from sampling.profile import resolve_profile
+from sampling.graph import CircuitMetadata
+from sampling.profile import OperationProfile, resolve_profile
 from sampling.representation import (
     SUPPORTED_FAST_PATH_VERSIONS,
     DataContract,
@@ -76,12 +76,9 @@ WARMUP_ITERS = 30
 
 
 def _load(
-    circuit_root: Path,
-    metadata_extractor: MetadataExtractor,
-    distance: int,
-    error_prob: float,
+    profile: OperationProfile, distance: int, error_prob: float
 ) -> tuple[Path, stim.Circuit, CircuitMetadata]:
-    """Resolve the one committed circuit at ``(distance, error_prob)`` and read it.
+    """Read the operation's one committed circuit at ``(distance, error_prob)``.
 
     Raises
     ------
@@ -90,16 +87,22 @@ def _load(
         different rounds).
     """
     points = settings_from_circuit_dir(
-        circuit_root, distances=[distance], error_probs=[error_prob]
+        profile.circuit_root,
+        operation=profile.operation,
+        distances=[distance],
+        error_probs=[error_prob],
     )
     if len(points) != 1:
         raise ValueError(
-            f"{circuit_root} holds {len(points)} circuits at d={distance}, "
+            f"{profile.circuit_root} holds {len(points)} circuits at d={distance}, "
             f"p={error_prob}: {[str(point.circuit_path) for point in points]}"
         )
     (point,) = points
     circuit = stim.Circuit.from_file(str(point.circuit_path))
-    return point.circuit_path, circuit, metadata_extractor(point.circuit_path)
+    metadata = profile.metadata_extractor(
+        point.circuit_path, num_observables=profile.data_contract.num_observables
+    )
+    return point.circuit_path, circuit, metadata
 
 
 def _percentiles(timings_ms: Sequence[float]) -> dict[str, float]:
@@ -342,12 +345,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     fast_path_available = representation in SUPPORTED_FAST_PATH_VERSIONS
 
     device = torch.device("cuda")
-    circuit_path, circuit, metadata = _load(
-        profile.circuit_root,
-        profile.metadata_extractor,
-        args.distance,
-        args.error_prob,
-    )
+    circuit_path, circuit, metadata = _load(profile, args.distance, args.error_prob)
     sampler = circuit.compile_detector_sampler(seed=args.seed)
     dets, _ = sampler.sample(
         shots=args.batch_size, separate_observables=True, bit_packed=False

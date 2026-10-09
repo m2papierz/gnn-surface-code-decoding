@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,7 @@ from sampling.sampler import ExperimentPoint, settings_from_circuit_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CIRCUITS_DIR = REPO_ROOT / "data" / "circuits" / "memory"
+MERGE_SPLIT_CIRCUITS_DIR = REPO_ROOT / "data" / "circuits" / "zz_merge_split"
 EVAL_DIR = REPO_ROOT / "data" / "eval" / "memory"
 CI_SHARD_DIR = REPO_ROOT / "data" / "ci_shard" / "memory"
 
@@ -142,7 +144,7 @@ class TestCommittedCircuitManifests:
 
 class TestDiscoveryCarriesTheKey:
     def test_committed_circuits_resolve_to_memory(self) -> None:
-        points = settings_from_circuit_dir(CIRCUITS_DIR)
+        points = settings_from_circuit_dir(CIRCUITS_DIR, operation="memory")
         assert len(points) == 12
         for point in points:
             assert isinstance(point, ExperimentPoint)
@@ -165,7 +167,7 @@ class TestDiscoveryCarriesTheKey:
             provenance={"note": "declared identity differs from the filename"},
         )
 
-        (point,) = settings_from_circuit_dir(tmp_path)
+        (point,) = settings_from_circuit_dir(tmp_path, operation="zz_merge_split")
         assert point.operation == "zz_merge_split"
         assert (point.distance, point.rounds, point.error_prob) == (5, 9, 0.005)
 
@@ -180,7 +182,7 @@ class TestDiscoveryCarriesTheKey:
             provenance={},
         )
 
-        (point,) = settings_from_circuit_dir(op_root)
+        (point,) = settings_from_circuit_dir(op_root, operation="zz_merge_split")
         assert point.operation == "zz_merge_split"
 
     def test_discovery_does_not_descend_into_subdirectories(
@@ -195,7 +197,7 @@ class TestDiscoveryCarriesTheKey:
         )
         _write_circuit(tmp_path / "zz_merge_split", "d3_r9_p0_005.stim", distance=3)
 
-        points = settings_from_circuit_dir(tmp_path)
+        points = settings_from_circuit_dir(tmp_path, operation="memory")
         assert len(points) == 1
         assert points[0].circuit_path.parent == tmp_path
 
@@ -205,7 +207,7 @@ class TestDiscoveryCarriesTheKey:
         with pytest.raises(
             FileNotFoundError, match=circuit_manifest_path(circuit_path).name
         ):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
 
     def test_manifest_without_operation_is_rejected(self, tmp_path: Path) -> None:
         circuit_path = _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
@@ -214,7 +216,7 @@ class TestDiscoveryCarriesTheKey:
             encoding="utf-8",
         )
         with pytest.raises(ValueError, match="operation"):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
 
     def test_truncated_manifest_is_rejected(self, tmp_path: Path) -> None:
         """A half-written manifest fails loudly instead of parsing as something."""
@@ -223,7 +225,7 @@ class TestDiscoveryCarriesTheKey:
             '{"operation": "memory", "distance": 3, "rou', encoding="utf-8"
         )
         with pytest.raises(ValueError, match="not valid JSON"):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
 
     def test_manifest_with_invalid_key_value_names_the_manifest(
         self, tmp_path: Path
@@ -242,7 +244,7 @@ class TestDiscoveryCarriesTheKey:
             encoding="utf-8",
         )
         with pytest.raises(ValueError, match=manifest_path.name):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
 
     def test_two_circuits_claiming_one_identity_are_rejected(
         self, tmp_path: Path
@@ -255,11 +257,45 @@ class TestDiscoveryCarriesTheKey:
         write_circuit_manifest(second, key, provenance={})
 
         with pytest.raises(ValueError, match="same experiment point"):
-            settings_from_circuit_dir(tmp_path)
+            settings_from_circuit_dir(tmp_path, operation="memory")
+
+    def test_a_root_of_another_operation_is_rejected(self) -> None:
+        """A memory run pointed at the merge-split root fails before sampling."""
+        with pytest.raises(ValueError) as excinfo:
+            settings_from_circuit_dir(MERGE_SPLIT_CIRCUITS_DIR, operation="memory")
+
+        message = str(excinfo.value)
+        assert "'memory'" in message and "'zz_merge_split'" in message
+        circuits = sorted(MERGE_SPLIT_CIRCUITS_DIR.glob("*.stim"))
+        assert circuits and all(str(path) in message for path in circuits)
+
+    def test_a_foreign_circuit_outside_the_filters_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Every circuit in the root belongs to the operation, filtered or not."""
+        own = _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
+        foreign = _write_circuit(tmp_path, "d5_r9_p0_01.stim", distance=5)
+        write_circuit_manifest(
+            own,
+            ExperimentKey(operation="memory", distance=3, rounds=3, error_prob=0.01),
+            provenance={},
+        )
+        write_circuit_manifest(
+            foreign,
+            ExperimentKey(
+                operation="zz_merge_split", distance=5, rounds=9, error_prob=0.01
+            ),
+            provenance={},
+        )
+
+        with pytest.raises(
+            ValueError, match=re.escape(f"{foreign} declares 'zz_merge_split'")
+        ):
+            settings_from_circuit_dir(tmp_path, operation="memory", distances=[3])
 
     def test_missing_circuit_directory_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(NotADirectoryError, match="does not exist"):
-            settings_from_circuit_dir(tmp_path / "absent")
+            settings_from_circuit_dir(tmp_path / "absent", operation="memory")
 
 
 class TestWriteCircuitManifest:

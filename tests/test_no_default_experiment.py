@@ -232,6 +232,29 @@ def _write_checkpoint(path: Path, operation: str) -> None:
     )
 
 
+def _run_memory_sanity(
+    eval_script: dict[str, Any], circuit_dir: Path, tmp_path: Path
+) -> None:
+    """Run sanity mode for memory over *circuit_dir* with a memory checkpoint."""
+    checkpoint = tmp_path / "best.pt"
+    _write_checkpoint(checkpoint, "memory")
+    eval_script["main"](
+        [
+            "--sanity",
+            "--operation",
+            "memory",
+            "--checkpoint",
+            str(checkpoint),
+            "--circuit-dir",
+            str(circuit_dir),
+            "--shots",
+            "64",
+            "-o",
+            str(tmp_path / "sanity.json"),
+        ]
+    )
+
+
 @pytest.fixture(scope="module")
 def eval_script() -> dict[str, Any]:
     return runpy.run_path(str(EVAL_SCRIPT))
@@ -250,9 +273,9 @@ class TestEvalPath:
         checkpoint = tmp_path / "best.pt"
         _write_checkpoint(checkpoint, operation)
         output = tmp_path / "sanity.json"
-        distance = settings_from_circuit_dir(resolve_profile(operation).circuit_root)[
-            0
-        ].distance
+        distance = settings_from_circuit_dir(
+            resolve_profile(operation).circuit_root, operation=operation
+        )[0].distance
 
         eval_script["main"](
             [
@@ -273,6 +296,29 @@ class TestEvalPath:
         results = json.loads(output.read_text(encoding="utf-8"))
         assert results
         assert all(r["n_shots"] == 64 and r["distance"] == distance for r in results)
+
+    def test_sanity_mode_rejects_a_root_of_another_operation(
+        self, eval_script: dict[str, Any], tmp_path: Path
+    ) -> None:
+        merge_split_root = resolve_profile("zz_merge_split").circuit_root
+        with pytest.raises(
+            ValueError,
+            match=r"discovered for operation 'memory'.* declares 'zz_merge_split'",
+        ):
+            _run_memory_sanity(eval_script, merge_split_root, tmp_path)
+
+    def test_sanity_mode_rejects_a_circuit_of_another_observable_count(
+        self,
+        eval_script: dict[str, Any],
+        two_observable_memory_root: Path,
+        tmp_path: Path,
+    ) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"has 2 observable\(s\), but the contract it is read under "
+            r"labels 1",
+        ):
+            _run_memory_sanity(eval_script, two_observable_memory_root, tmp_path)
 
     def test_dry_run_decodes_the_ci_shard(
         self, eval_script: dict[str, Any], tmp_path: Path

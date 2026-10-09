@@ -190,7 +190,10 @@ def diagnose_operation(
     circuits = {
         point.key: point.circuit_path
         for point in settings_from_circuit_dir(
-            profile.circuit_root, distances=distances, error_probs=error_probs
+            profile.circuit_root,
+            operation=operation,
+            distances=distances,
+            error_probs=error_probs,
         )
     }
     points: list[PointDiagnostics] = []

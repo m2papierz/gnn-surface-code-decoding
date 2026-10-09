@@ -5,16 +5,16 @@ accumulates ≥400 MWPM logical errors (target) or hits the 1,000,000 shot cap.
 Each set is saved as compressed numpy archives with a manifest recording all
 provenance information, under the root of the operation its circuits declare.
 
-``--circuit-dir`` names one operation's circuit root and has no default: an
-evaluation set inherits the identity of the circuits it was sampled from, so
-which circuits those are is stated at the call rather than assumed.
+``--operation`` has no default: an evaluation set inherits the identity of the
+circuits it was sampled from, so the operation is stated at the call and its
+circuits are read from that operation's root, every one of them declaring it.
 
 Usage
 -----
-    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory
-    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory \
+    uv run python scripts/generate_eval_sets.py --operation memory
+    uv run python scripts/generate_eval_sets.py --operation memory \
         --target-errors 400 --cap 1000000
-    uv run python scripts/generate_eval_sets.py --circuit-dir data/circuits/memory \
+    uv run python scripts/generate_eval_sets.py --operation memory \
         --distances 3 5  # subset
 """
 
@@ -142,6 +142,12 @@ def generate_eval_set(
     error_prob = key.error_prob
 
     circuit = stim.Circuit.from_file(str(circuit_path))
+    # The profile's extractor, so the set carries the inputs the builder reads
+    # at training time; read before sampling, so a refused circuit costs none.
+    profile = resolve_profile(key.operation)
+    metadata = profile.metadata_extractor(
+        circuit_path, num_observables=profile.data_contract.num_observables
+    )
     baseline: Decoder = (
         CorrelatedMatchingDecoder(circuit_path)
         if sizing_baseline == "correlated"
@@ -204,11 +210,6 @@ def generate_eval_set(
         f"Accumulated {baseline_errors_total} != verified {verified_errors}"
     )
 
-    # Extract metadata using the profile's extractor so the eval set carries
-    # the same inputs the builder will receive at training time.
-    profile = resolve_profile(key.operation)
-    metadata = profile.metadata_extractor(circuit_path)
-
     # Save - include phased metadata arrays when the operation provides them,
     # so the eval set is self-contained for its representation.
     p_str = f"{error_prob:.4f}".replace(".", "_")
@@ -257,7 +258,7 @@ def generate_eval_set(
         "n_max_p99_9": fired_stats["p99_9"],
         "generation_command": (
             f"uv run python scripts/generate_eval_sets.py"
-            f" --circuit-dir {circuit_path.parent}"
+            f" --operation {key.operation}"
             f" --baseline {sizing_baseline}"
         ),
     }
@@ -292,10 +293,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--circuit-dir",
-        type=Path,
+        "--operation",
         required=True,
-        help="Circuit root of one operation, e.g. data/circuits/memory",
+        help="Operation whose committed circuits are sampled, e.g. memory",
     )
     parser.add_argument(
         "--output-root",
@@ -329,7 +329,11 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    points = settings_from_circuit_dir(args.circuit_dir, distances=args.distances)
+    points = settings_from_circuit_dir(
+        resolve_profile(args.operation).circuit_root,
+        operation=args.operation,
+        distances=args.distances,
+    )
     logger.info("Generating eval sets for %d experiment points", len(points))
 
     results = []

@@ -48,7 +48,7 @@ uv run scripts/generate_circuits_memory.py
 uv run scripts/generate_circuits_tqec.py
 
 # Frozen evaluation sets from committed circuits
-uv run scripts/generate_eval_sets.py --circuit-dir data/circuits/memory
+uv run scripts/generate_eval_sets.py --operation memory
 
 # Small CI shard for test suite
 uv run scripts/generate_ci_shard_memory.py
@@ -57,11 +57,14 @@ uv run scripts/generate_ci_shard_memory.py
 ### Python API
 
 ```python
-from sampling.sampler import CircuitSetting, WorkerSampler, settings_from_circuit_dir
-from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
 from sampling.profile import resolve_profile
+from sampling.sampler import settings_from_circuit_dir
 
-metadata = resolve_profile("zz_merge_split").metadata_extractor(circuit_path)
+profile = resolve_profile("zz_merge_split")
+points = settings_from_circuit_dir(profile.circuit_root, operation=profile.operation)
+metadata = profile.metadata_extractor(
+    points[0].circuit_path, num_observables=profile.data_contract.num_observables
+)
 ```
 
 ## Output structure
@@ -70,7 +73,10 @@ All artifacts are partitioned by operation at the root level.
 
 A circuit's identity `(operation, distance, rounds, error_prob)` is read from
 the manifest beside it and nowhere else: the filename carries none, and a
-circuit without a manifest is rejected by discovery.
+circuit without a manifest is rejected by discovery. Discovery is handed the
+operation it serves and rejects a root holding a circuit of another; an
+extractor is handed the observable count of the contract in use and rejects a
+circuit with another count.
 
 ### Circuits
 

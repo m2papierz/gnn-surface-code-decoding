@@ -66,7 +66,8 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         Representation and label spec the graphs are built under.
     metadata_extractor : MetadataExtractor
         The operation's extractor, building the metadata the contract's
-        builder reads.
+        builder reads; a circuit whose observable count is not the contract's
+        is refused.
     include_p_feature : bool
         If ``True``, attach ``p`` as a graph-level feature.
     distance_weights : dict mapping int to float, optional
@@ -147,6 +148,7 @@ class StreamingSurfaceCodeDataset(IterableDataset):
             self.settings,
             worker_seed,
             metadata_extractor=self._metadata_extractor,
+            num_observables=self._contract.num_observables,
             weights=self._setting_weights,
         )
 

@@ -79,7 +79,9 @@ class Trainer:
     def _setup_data(self) -> None:
         """Build streaming training loader and frozen validation set."""
         settings = settings_from_circuit_dir(
-            self.cfg.circuit_dir, distances=self.cfg.distances
+            self.cfg.circuit_dir,
+            operation=self.cfg.operation,
+            distances=self.cfg.distances,
         )
 
         self.train_loader = make_streaming_loader(settings, self.cfg, self.device)

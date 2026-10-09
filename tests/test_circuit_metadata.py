@@ -253,7 +253,9 @@ class TestCommittedMergeSplitMetadata:
         """Every frozen eval set stored the layout its circuit was read with."""
         manifest = json.loads((eval_dir / "manifest.json").read_text())
         frozen = np.load(eval_dir / "data.npz")
-        metadata = read_logical_op_metadata(REPO_ROOT / manifest["circuit_file"])
+        metadata = read_logical_op_metadata(
+            REPO_ROOT / manifest["circuit_file"], num_observables=2
+        )
 
         assert metadata.layout is not None
         np.testing.assert_array_equal(
@@ -276,7 +278,7 @@ class TestCommittedMergeSplitMetadata:
             for w in manifest["phase_windows"]
         )
         key = circuit_key(circuit_path)
-        metadata = read_logical_op_metadata(circuit_path)
+        metadata = read_logical_op_metadata(circuit_path, num_observables=2)
 
         assert (metadata.distance, metadata.rounds) == (key.distance, key.rounds)
         assert metadata.layout is not None
@@ -317,8 +319,8 @@ class TestResolutionByIdentity:
         seam = manifest["seam_detector_indices"]
         _edit_manifest(second, seam_detector_indices=seam[1:])
 
-        first_layout = read_logical_op_metadata(first).layout
-        second_layout = read_logical_op_metadata(second).layout
+        first_layout = read_logical_op_metadata(first, num_observables=2).layout
+        second_layout = read_logical_op_metadata(second, num_observables=2).layout
         assert first_layout is not None and second_layout is not None
         assert np.flatnonzero(first_layout.seam_mask).tolist() == sorted(seam)
         assert np.flatnonzero(second_layout.seam_mask).tolist() == sorted(seam[1:])
@@ -327,7 +329,7 @@ class TestResolutionByIdentity:
         circuit_path = tmp_path / "unlabelled.stim"
         shutil.copyfile(MERGE_SPLIT_CIRCUITS[0], circuit_path)
         with pytest.raises(FileNotFoundError, match="has no manifest"):
-            read_logical_op_metadata(circuit_path)
+            read_logical_op_metadata(circuit_path, num_observables=2)
 
     def test_missing_layout_field_raises_naming_the_key(self, tmp_path: Path) -> None:
         circuit_path = _copy_circuit(MERGE_SPLIT_CIRCUITS[0], tmp_path)
@@ -338,7 +340,7 @@ class TestResolutionByIdentity:
         with pytest.raises(
             ValueError, match=rf"{circuit_key(circuit_path)}: .* \['patch_ids'\]"
         ):
-            read_logical_op_metadata(circuit_path)
+            read_logical_op_metadata(circuit_path, num_observables=2)
 
     def test_uncovered_detector_raises_naming_key_and_detector(
         self, tmp_path: Path
@@ -348,13 +350,14 @@ class TestResolutionByIdentity:
         windows = manifest["phase_windows"]
         windows[0]["t_start"] = 0.5
         _edit_manifest(circuit_path, phase_windows=windows)
-        times = read_circuit_metadata(circuit_path).detector_coords[:, 2]
+        metadata = read_circuit_metadata(circuit_path, num_observables=2)
+        times = metadata.detector_coords[:, 2]
         first = int(np.flatnonzero(times < 0.5)[0])
         with pytest.raises(
             ValueError,
             match=rf"{circuit_key(circuit_path)}: .*detector {first} at t=0.0 is not",
         ):
-            read_logical_op_metadata(circuit_path)
+            read_logical_op_metadata(circuit_path, num_observables=2)
 
 
 class TestDetectorWithoutCoordinates:
@@ -375,13 +378,15 @@ class TestDetectorWithoutCoordinates:
             match=rf"{circuit_key(circuit_path)}: circuit "
             rf"{re.escape(str(circuit_path))}: detector 0 declares 0 coordinate",
         ):
-            profile.metadata_extractor(circuit_path)
+            profile.metadata_extractor(
+                circuit_path, num_observables=profile.data_contract.num_observables
+            )
 
 
 class TestRegisteredExtractors:
     def test_memory_reads_distance_and_rounds_from_its_manifest(self) -> None:
         circuit_path = REPO_ROOT / "data/circuits/memory/d5_r5_p0_01.stim"
-        metadata = read_circuit_metadata(circuit_path)
+        metadata = read_circuit_metadata(circuit_path, num_observables=1)
         assert (metadata.distance, metadata.rounds) == (5, 5)
         assert metadata.layout is None
 
@@ -389,6 +394,22 @@ class TestRegisteredExtractors:
     def test_extractor_pickles_for_spawned_workers(self, operation: str) -> None:
         extractor = resolve_profile(operation).metadata_extractor
         assert pickle.loads(pickle.dumps(extractor)) is extractor
+
+    @pytest.mark.parametrize("operation", sorted(registered_operations()))
+    def test_another_observable_count_is_refused_naming_both(
+        self, operation: str
+    ) -> None:
+        """Shots of the circuit would be labelled under a contract of another width."""
+        profile = resolve_profile(operation)
+        circuit_path = sorted((REPO_ROOT / profile.circuit_root).glob("*.stim"))[0]
+        own = profile.data_contract.num_observables
+        with pytest.raises(
+            ValueError,
+            match=rf"{circuit_key(circuit_path)}: circuit "
+            rf"{re.escape(str(circuit_path))} has {own} observable\(s\), but the "
+            rf"contract it is read under labels {own + 1}",
+        ):
+            profile.metadata_extractor(circuit_path, num_observables=own + 1)
 
     @pytest.mark.parametrize("operation", sorted(registered_operations()))
     def test_committed_circuits_carry_the_profiles_observables(

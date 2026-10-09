@@ -7,10 +7,9 @@ GNN training and inference.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 import numpy as np
 import stim
@@ -171,9 +170,19 @@ class CircuitMetadata:
             )
 
 
-type MetadataExtractor = Callable[[Path], CircuitMetadata]
-"""``circuit_path -> CircuitMetadata`` for a committed circuit, read at the
-distance and rounds its manifest declares; each operation names its own."""
+class MetadataExtractor(Protocol):
+    """Reads a committed circuit into the metadata its builder reads.
+
+    Distance, rounds and any layout come from the manifest beside the circuit.
+    ``num_observables`` is the label width of the contract the caller runs
+    under; a circuit with any other observable count is refused, so its shots
+    can never be labelled under a contract of another width.  Each operation
+    names its own extractor.
+    """
+
+    def __call__(
+        self, circuit_path: Path, /, *, num_observables: int
+    ) -> CircuitMetadata: ...
 
 
 @dataclass(frozen=True, slots=True)

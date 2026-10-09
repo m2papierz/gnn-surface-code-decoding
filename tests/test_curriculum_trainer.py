@@ -156,11 +156,12 @@ class TestCurriculumConfig:
 
 class TestWeightedSampling:
     def test_uniform_when_no_weights(self, circuit_dir) -> None:
-        settings = settings_from_circuit_dir(circuit_dir)
+        settings = settings_from_circuit_dir(circuit_dir, operation="memory")
         sampler = WorkerSampler(
             settings,
             worker_seed=42,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
@@ -170,13 +171,14 @@ class TestWeightedSampling:
         assert counts[5] > 0
 
     def test_weights_skew_distribution(self, circuit_dir) -> None:
-        settings = settings_from_circuit_dir(circuit_dir)
+        settings = settings_from_circuit_dir(circuit_dir, operation="memory")
         weights = np.array([0.9 if s.distance == 3 else 0.1 for s in settings])
         sampler = WorkerSampler(
             settings,
             worker_seed=42,
             weights=weights,
             metadata_extractor=resolve_profile("memory").metadata_extractor,
+            num_observables=1,
         )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
@@ -185,23 +187,25 @@ class TestWeightedSampling:
         assert counts[3] > counts[5] * 3
 
     def test_weights_length_mismatch_rejected(self, circuit_dir) -> None:
-        settings = settings_from_circuit_dir(circuit_dir)
+        settings = settings_from_circuit_dir(circuit_dir, operation="memory")
         with pytest.raises(ValueError, match="weights length"):
             WorkerSampler(
                 settings,
                 worker_seed=42,
                 weights=np.array([0.5]),
                 metadata_extractor=resolve_profile("memory").metadata_extractor,
+                num_observables=1,
             )
 
     def test_zero_weights_rejected(self, circuit_dir) -> None:
-        settings = settings_from_circuit_dir(circuit_dir)
+        settings = settings_from_circuit_dir(circuit_dir, operation="memory")
         with pytest.raises(ValueError, match="positive value"):
             WorkerSampler(
                 settings,
                 worker_seed=42,
                 weights=np.zeros(len(settings)),
                 metadata_extractor=resolve_profile("memory").metadata_extractor,
+                num_observables=1,
             )
 
 

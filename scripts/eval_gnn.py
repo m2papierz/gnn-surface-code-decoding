@@ -331,7 +331,9 @@ def _evaluate_at_setting(
         Per-setting results with LER and Wilson intervals for both decoders.
     """
     circuit = stim.Circuit.from_file(str(point.circuit_path))
-    metadata = resolve_profile(point.operation).metadata_extractor(point.circuit_path)
+    metadata = resolve_profile(cfg.operation).metadata_extractor(
+        point.circuit_path, num_observables=checkpoint.contract.num_observables
+    )
 
     sampler = circuit.compile_detector_sampler(seed=cfg.seed)
     dets, obs = sampler.sample(
@@ -381,11 +383,10 @@ def run_sanity(cfg: EvalConfig) -> list[dict]:
 
     settings = settings_from_circuit_dir(
         cfg.circuit_dir,
+        operation=cfg.operation,
         distances=cfg.distances,
         error_probs=cfg.error_probs,
     )
-    for point in settings:
-        _require_operation(cfg, point.operation, point.circuit_path)
     dist_label = ",".join(str(d) for d in cfg.distances) if cfg.distances else "all"
     logger.info("Found %d settings for d={%s}", len(settings), dist_label)
 

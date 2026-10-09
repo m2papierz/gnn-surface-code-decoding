@@ -29,7 +29,7 @@ uv run scripts/generate_circuits_memory.py
 uv run scripts/generate_circuits_tqec.py
 
 # Frozen evaluation sets
-uv run scripts/generate_eval_sets.py --circuit-dir data/circuits/memory
+uv run scripts/generate_eval_sets.py --operation memory
 
 # Small CI shard for test suite
 uv run scripts/generate_ci_shard_memory.py
