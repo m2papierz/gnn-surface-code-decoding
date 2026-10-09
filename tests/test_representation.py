@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from sampling.profile import resolve_profile
 from sampling.representation import (
     SPATIAL,
-    SPATIAL_MEMORY,
     DataContract,
     LabelSpec,
     RepresentationDescriptor,
@@ -94,18 +94,18 @@ class TestLabelSpec:
 
 class TestDataContract:
     def test_spatial_memory_properties(self) -> None:
-        assert SPATIAL_MEMORY.node_dim == 6
-        assert SPATIAL_MEMORY.edge_dim == 6
-        assert SPATIAL_MEMORY.num_observables == 1
-        assert SPATIAL_MEMORY.version == "spatial"
+        assert resolve_profile("memory").data_contract.node_dim == 6
+        assert resolve_profile("memory").data_contract.edge_dim == 6
+        assert resolve_profile("memory").data_contract.num_observables == 1
+        assert resolve_profile("memory").data_contract.version == "spatial"
 
     def test_roundtrip(self) -> None:
-        d = SPATIAL_MEMORY.to_dict()
+        d = resolve_profile("memory").data_contract.to_dict()
         restored = DataContract.from_dict(d)
-        assert restored == SPATIAL_MEMORY
+        assert restored == resolve_profile("memory").data_contract
 
     def test_to_dict_contents(self) -> None:
-        d = SPATIAL_MEMORY.to_dict()
+        d = resolve_profile("memory").data_contract.to_dict()
         assert d["version"] == "spatial"
         assert d["node_dim"] == 6
         assert d["edge_dim"] == 6
@@ -115,9 +115,12 @@ class TestDataContract:
         assert d["observable_names"] == ["logical_observable"]
 
     def test_from_checkpoint_config(self) -> None:
-        cfg = {"contract": SPATIAL_MEMORY.to_dict(), "other_stuff": 42}
+        cfg = {
+            "contract": resolve_profile("memory").data_contract.to_dict(),
+            "other_stuff": 42,
+        }
         restored = DataContract.from_checkpoint_config(cfg)
-        assert restored == SPATIAL_MEMORY
+        assert restored == resolve_profile("memory").data_contract
 
     def test_from_checkpoint_config_rejects_missing_contract(self) -> None:
         with pytest.raises(KeyError):
@@ -125,7 +128,7 @@ class TestDataContract:
 
     def test_frozen(self) -> None:
         with pytest.raises(AttributeError):
-            SPATIAL_MEMORY.representation = SPATIAL  # type: ignore[misc]
+            resolve_profile("memory").data_contract.representation = SPATIAL  # type: ignore[misc]
 
 
 class TestBuilderResolution:

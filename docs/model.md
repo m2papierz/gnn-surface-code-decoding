@@ -69,6 +69,13 @@ model = build_model(node_dim=6, edge_dim=6, hidden_dim=128, num_layers=6, num_ob
 
 All decoders implement the `Decoder` protocol with `name` property and `decode_batch()`.
 
+A trained checkpoint is restored for inference with `load_gnn_checkpoint`, under
+the data contract of the operation being evaluated
+(`resolve_profile(operation).data_contract`); a checkpoint trained under any
+other contract is rejected at load, naming every axis that differs.  Every
+evaluation mode decodes through `GNNDecoder`, which also rejects a model whose
+input or output width is not its contract's.
+
 | Decoder | Description |
 |---------|-------------|
 | `PyMatchingDecoder` | DEM-weighted MWPM via PyMatching |

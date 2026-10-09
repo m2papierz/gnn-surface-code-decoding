@@ -257,7 +257,18 @@ class TestModelIntegration:
         syndromes[0] = 0  # keep an empty shot in the batch
         built = _build_on_device(syndromes, metadata)
 
-        model = build_model(hidden_dim=16, num_layers=2, dropout=0.0).cuda().eval()
+        model = (
+            build_model(
+                hidden_dim=16,
+                num_layers=2,
+                dropout=0.0,
+                node_dim=6,
+                edge_dim=6,
+                num_observables=1,
+            )
+            .cuda()
+            .eval()
+        )
         with torch.no_grad():
             logits = model(built)
 
@@ -287,6 +298,17 @@ class TestModelIntegration:
         ).to("cuda")
 
         torch.manual_seed(0)
-        model = build_model(hidden_dim=32, num_layers=3, dropout=0.0).cuda().eval()
+        model = (
+            build_model(
+                hidden_dim=32,
+                num_layers=3,
+                dropout=0.0,
+                node_dim=6,
+                edge_dim=6,
+                num_observables=1,
+            )
+            .cuda()
+            .eval()
+        )
         with torch.no_grad():
             torch.testing.assert_close(model(built), model(reference))

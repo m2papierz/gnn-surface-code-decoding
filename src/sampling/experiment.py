@@ -43,13 +43,6 @@ _MANIFEST_SUFFIX: Final[str] = ".manifest.json"
 # belongs to.  Provenance fields are added by whichever generator wrote it.
 _KEY_FIELDS: Final[tuple[str, ...]] = ("operation", "distance", "rounds", "error_prob")
 
-# Circuits committed before the experiment axis existed carry no manifest, and
-# neither do the throwaway circuit directories built during testing.  Every
-# such circuit is a static memory experiment.  A circuit written by any
-# generator declares its operation in a manifest and is read from it, so this
-# is a rule about unlabelled artifacts - not a value a consumer may default to.
-_UNMANIFESTED_CIRCUIT_OPERATION: Final[str] = "memory"
-
 
 def validate_operation_name(operation: str) -> None:
     """Reject an operation name that is not a lowercase identifier.
@@ -123,7 +116,7 @@ def circuit_manifest_path(circuit_path: Path) -> Path:
     return circuit_path.with_name(circuit_path.stem + _MANIFEST_SUFFIX)
 
 
-def read_circuit_manifest(circuit_path: Path) -> dict[str, Any] | None:
+def read_circuit_manifest(circuit_path: Path) -> dict[str, Any]:
     """Read the manifest beside a circuit.
 
     Parameters
@@ -133,14 +126,27 @@ def read_circuit_manifest(circuit_path: Path) -> dict[str, Any] | None:
 
     Returns
     -------
-    dict or None
-        Manifest contents, or ``None`` if the circuit carries no manifest.
+    dict
+        Manifest contents.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the circuit carries no manifest: nothing else may declare which
+        experiment it belongs to.
+    ValueError
+        If the manifest is not a JSON object.
     """
     manifest_path = circuit_manifest_path(circuit_path)
-    if not manifest_path.exists():
-        return None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        text = manifest_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Circuit {circuit_path} has no manifest at {manifest_path}; a circuit "
+            f"declares its experiment through write_circuit_manifest"
+        ) from exc
+    try:
+        manifest = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"Circuit manifest {manifest_path} is not valid JSON: {exc}"
@@ -189,82 +195,34 @@ def _key_from_manifest(manifest: Mapping[str, Any], source: Path) -> ExperimentK
         raise ValueError(f"Manifest {source} declares an invalid key: {exc}") from exc
 
 
-def circuit_key(
-    circuit_path: Path,
-    *,
-    distance: int,
-    rounds: int,
-    error_prob: float,
-) -> ExperimentKey:
-    """Resolve the experiment key of a committed circuit.
-
-    The manifest beside the circuit is authoritative for the whole key, so a
-    filename can never contradict it.  ``distance``, ``rounds`` and
-    ``error_prob`` are the caller's reading of the filename and are used only
-    for a circuit that carries no manifest.
+def circuit_key(circuit_path: Path) -> ExperimentKey:
+    """Resolve the experiment key of a committed circuit from its manifest.
 
     Parameters
     ----------
     circuit_path : Path
         Path to a ``.stim`` circuit file.
-    distance, rounds : int
-        Code parameters read from the filename.
-    error_prob : float
-        Physical error probability read from the filename.
 
     Returns
     -------
     ExperimentKey
-    """
-    manifest = read_circuit_manifest(circuit_path)
-    if manifest is None:
-        return ExperimentKey(
-            operation=_UNMANIFESTED_CIRCUIT_OPERATION,
-            distance=distance,
-            rounds=rounds,
-            error_prob=error_prob,
-        )
-    return _key_from_manifest(manifest, circuit_manifest_path(circuit_path))
-
-
-def _circuit_operation(circuit_path: Path) -> str:
-    """Resolve the operation a committed circuit belongs to.
-
-    Parameters
-    ----------
-    circuit_path : Path
-        Path to a ``.stim`` circuit file.
-
-    Returns
-    -------
-    str
 
     Raises
     ------
     FileNotFoundError
-        If neither the circuit nor a manifest beside it exists, so there is
-        nothing to resolve the operation from.
+        If the circuit carries no manifest.
+    ValueError
+        If the manifest is unreadable or declares an invalid key.
     """
     manifest = read_circuit_manifest(circuit_path)
-    if manifest is not None:
-        return _key_from_manifest(
-            manifest, circuit_manifest_path(circuit_path)
-        ).operation
-    if not circuit_path.exists():
-        raise FileNotFoundError(
-            f"Cannot resolve the operation of {circuit_path}: neither the circuit "
-            f"nor a manifest beside it exists"
-        )
-    return _UNMANIFESTED_CIRCUIT_OPERATION
+    return _key_from_manifest(manifest, circuit_manifest_path(circuit_path))
 
 
 def eval_set_operation(manifest: Mapping[str, Any], circuit_file: str | Path) -> str:
     """Resolve the operation a frozen evaluation set belongs to.
 
-    A set that declares its own operation is taken at its word, and the circuit
-    it names must agree.  A set that does not declare one - every set frozen
-    before the experiment axis existed - inherits the operation of that
-    circuit, which is where the shots came from.
+    The set inherits the operation of the circuit its shots were sampled from.
+    A set that also declares one must agree with that circuit.
 
     Parameters
     ----------
@@ -280,11 +238,13 @@ def eval_set_operation(manifest: Mapping[str, Any], circuit_file: str | Path) ->
 
     Raises
     ------
+    FileNotFoundError
+        If the circuit the set names carries no manifest.
     ValueError
         If the set declares an operation the circuit does not belong to.
     """
     circuit_path = Path(circuit_file)
-    from_circuit = _circuit_operation(circuit_path)
+    from_circuit = circuit_key(circuit_path).operation
 
     declared = manifest.get("operation")
     if declared is None:

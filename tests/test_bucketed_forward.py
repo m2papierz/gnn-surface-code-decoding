@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 import torch
 
+from sampling.profile import resolve_profile
+
 
 def _cuda_available() -> bool:
     if not torch.cuda.is_available():
@@ -33,7 +35,18 @@ pytestmark = pytest.mark.skipif(
 def _make_model(hidden: int = 32, layers: int = 2):
     from model.decoder import build_model
 
-    return build_model(hidden_dim=hidden, num_layers=layers, dropout=0.0).cuda().eval()
+    return (
+        build_model(
+            hidden_dim=hidden,
+            num_layers=layers,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
+        .cuda()
+        .eval()
+    )
 
 
 def _make_syndromes(distance: int, n_shots: int, seed: int = 7) -> np.ndarray:
@@ -137,7 +150,9 @@ class TestBucketedRunnerEquivalence:
         with torch.no_grad():
             ref = model(batch)
 
-        runner = BucketedGraphRunner(model, batch_size=16)
+        runner = BucketedGraphRunner(
+            model, batch_size=16, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward_from_batch(batch)
 
         torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
@@ -153,7 +168,9 @@ class TestBucketedRunnerEquivalence:
         with torch.no_grad():
             ref = model(batch)
 
-        runner = BucketedGraphRunner(model, batch_size=1)
+        runner = BucketedGraphRunner(
+            model, batch_size=1, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward_from_batch(batch)
 
         torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
@@ -168,7 +185,9 @@ class TestBucketedRunnerEquivalence:
         with torch.no_grad():
             ref = model(batch)
 
-        runner = BucketedGraphRunner(model, batch_size=16)
+        runner = BucketedGraphRunner(
+            model, batch_size=16, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward(
             batch.x,
             batch.edge_index,
@@ -202,7 +221,11 @@ class TestNoStaleState:
         # One bucket wide enough for both, so the second call reuses the
         # buffers the first one filled.
         runner = BucketedGraphRunner(
-            model, batch_size=8, node_buckets=(128,), edge_buckets=(2048,)
+            model,
+            batch_size=8,
+            node_buckets=(128,),
+            edge_buckets=(2048,),
+            contract=resolve_profile("memory").data_contract,
         )
         runner.forward_from_batch(dense_batch)
         out = runner.forward_from_batch(sparse_batch)
@@ -224,7 +247,9 @@ class TestNoStaleState:
         syndromes = _make_syndromes(5, n_shots=8)
         batch = _build_device_batch(syndromes, 5)
 
-        runner = BucketedGraphRunner(model, batch_size=8)
+        runner = BucketedGraphRunner(
+            model, batch_size=8, contract=resolve_profile("memory").data_contract
+        )
         first = runner.forward_from_batch(batch).clone()
         for _ in range(3):
             again = runner.forward_from_batch(batch)
@@ -235,7 +260,11 @@ class TestNoStaleState:
 
         model = _make_model()
         runner = BucketedGraphRunner(
-            model, batch_size=8, node_buckets=(256,), edge_buckets=(8192,)
+            model,
+            batch_size=8,
+            node_buckets=(256,),
+            edge_buckets=(8192,),
+            contract=resolve_profile("memory").data_contract,
         )
 
         runner.forward_from_batch(_build_device_batch(_make_syndromes(3, 8), 3))
@@ -260,7 +289,9 @@ class TestPrewarm:
         from kernels.bucketed import BucketedGraphRunner
 
         model = _make_model()
-        runner = BucketedGraphRunner(model, batch_size=4)
+        runner = BucketedGraphRunner(
+            model, batch_size=4, contract=resolve_profile("memory").data_contract
+        )
         batch = _build_device_batch(_make_syndromes(5, 4), 5)
 
         assert runner.prewarm([(batch.total_nodes, batch.total_edges)]) == 1
@@ -273,7 +304,9 @@ class TestPrewarm:
         from kernels.bucketed import BucketedGraphRunner
 
         model = _make_model()
-        runner = BucketedGraphRunner(model, batch_size=4)
+        runner = BucketedGraphRunner(
+            model, batch_size=4, contract=resolve_profile("memory").data_contract
+        )
         batch = _build_device_batch(_make_syndromes(5, 4), 5)
         totals = [(batch.total_nodes, batch.total_edges)]
 
@@ -287,10 +320,14 @@ class TestPrewarm:
         model = _make_model()
         batch = _build_device_batch(_make_syndromes(5, 4), 5)
 
-        lazy = BucketedGraphRunner(model, batch_size=4).forward_from_batch(batch)
+        lazy = BucketedGraphRunner(
+            model, batch_size=4, contract=resolve_profile("memory").data_contract
+        ).forward_from_batch(batch)
         lazy = lazy.clone()
 
-        warm = BucketedGraphRunner(model, batch_size=4)
+        warm = BucketedGraphRunner(
+            model, batch_size=4, contract=resolve_profile("memory").data_contract
+        )
         warm.prewarm([(batch.total_nodes, batch.total_edges)])
 
         torch.testing.assert_close(
@@ -301,7 +338,11 @@ class TestPrewarm:
         """A zero-node batch short-circuits, so it selects no bucket."""
         from kernels.bucketed import BucketedGraphRunner
 
-        runner = BucketedGraphRunner(_make_model(), batch_size=4)
+        runner = BucketedGraphRunner(
+            _make_model(),
+            batch_size=4,
+            contract=resolve_profile("memory").data_contract,
+        )
         assert runner.prewarm([(0, 0)]) == 0
         assert not runner._buckets
 
@@ -310,7 +351,11 @@ class TestPrewarm:
         from kernels.bucketed import BucketedGraphRunner
 
         runner = BucketedGraphRunner(
-            _make_model(), batch_size=4, node_buckets=(64,), edge_buckets=(4096,)
+            _make_model(),
+            batch_size=4,
+            node_buckets=(64,),
+            edge_buckets=(4096,),
+            contract=resolve_profile("memory").data_contract,
         )
         with pytest.raises(ValueError, match="largest nodes rung"):
             runner.prewarm([(65, 128)])
@@ -323,7 +368,9 @@ class TestDegenerateCases:
         model = _make_model()
         batch = _build_device_batch(np.zeros((8, 24), dtype=np.uint8), 3)
 
-        runner = BucketedGraphRunner(model, batch_size=8)
+        runner = BucketedGraphRunner(
+            model, batch_size=8, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward_from_batch(batch)
 
         assert out.shape == (8, 1)
@@ -342,7 +389,9 @@ class TestDegenerateCases:
         with torch.no_grad():
             ref = model(batch)
 
-        runner = BucketedGraphRunner(model, batch_size=8)
+        runner = BucketedGraphRunner(
+            model, batch_size=8, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward_from_batch(batch)
 
         torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
@@ -359,7 +408,9 @@ class TestDegenerateCases:
         with torch.no_grad():
             ref = model(batch)
 
-        runner = BucketedGraphRunner(model, batch_size=4)
+        runner = BucketedGraphRunner(
+            model, batch_size=4, contract=resolve_profile("memory").data_contract
+        )
         out = runner.forward_from_batch(batch)
 
         torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
@@ -370,7 +421,9 @@ class TestValidation:
         from kernels.bucketed import BucketedGraphRunner
 
         model = _make_model()
-        runner = BucketedGraphRunner(model, batch_size=16)
+        runner = BucketedGraphRunner(
+            model, batch_size=16, contract=resolve_profile("memory").data_contract
+        )
 
         with pytest.raises(ValueError, match="batch_size"):
             runner.forward(
@@ -386,7 +439,11 @@ class TestValidation:
 
         model = _make_model()
         runner = BucketedGraphRunner(
-            model, batch_size=1, node_buckets=(4,), edge_buckets=(64,)
+            model,
+            batch_size=1,
+            node_buckets=(4,),
+            edge_buckets=(64,),
+            contract=resolve_profile("memory").data_contract,
         )
 
         with pytest.raises(ValueError, match="largest nodes rung"):
@@ -404,7 +461,11 @@ class TestValidation:
 
         model = _make_model()
         runner = BucketedGraphRunner(
-            model, batch_size=1, node_buckets=(64,), edge_buckets=(16,)
+            model,
+            batch_size=1,
+            node_buckets=(64,),
+            edge_buckets=(16,),
+            contract=resolve_profile("memory").data_contract,
         )
 
         with pytest.raises(ValueError, match="largest edges rung"):
@@ -420,13 +481,19 @@ class TestValidation:
         from kernels.bucketed import BucketedGraphRunner
         from model.decoder import build_model
 
-        model = build_model(hidden_dim=16, num_layers=1).eval()
+        model = build_model(
+            hidden_dim=16, num_layers=1, node_dim=6, edge_dim=6, num_observables=1
+        ).eval()
         with pytest.raises(ValueError, match="CUDA"):
-            BucketedGraphRunner(model, batch_size=1)
+            BucketedGraphRunner(
+                model, batch_size=1, contract=resolve_profile("memory").data_contract
+            )
 
     def test_zero_batch_size_raises(self) -> None:
         from kernels.bucketed import BucketedGraphRunner
 
         model = _make_model()
         with pytest.raises(ValueError, match="batch_size must be >= 1"):
-            BucketedGraphRunner(model, batch_size=0)
+            BucketedGraphRunner(
+                model, batch_size=0, contract=resolve_profile("memory").data_contract
+            )

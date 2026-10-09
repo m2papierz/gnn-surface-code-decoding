@@ -16,6 +16,7 @@ from sampling.graph import (
     build_fired_detector_graph,
     extract_circuit_metadata,
 )
+from sampling.profile import resolve_profile
 from sampling.sampler import CircuitSetting, WorkerSampler, settings_from_circuit_dir
 
 
@@ -419,8 +420,12 @@ class TestWorkerSampler:
     def test_deterministic(self) -> None:
         """Same seed produces identical sample sequences."""
         settings = _d3_settings()
-        s1 = WorkerSampler(settings, worker_seed=12345)
-        s2 = WorkerSampler(settings, worker_seed=12345)
+        s1 = WorkerSampler(
+            settings, worker_seed=12345, metadata_extractor=extract_circuit_metadata
+        )
+        s2 = WorkerSampler(
+            settings, worker_seed=12345, metadata_extractor=extract_circuit_metadata
+        )
 
         for _ in range(20):
             syn1, obs1, meta1, p1 = s1.sample()
@@ -433,8 +438,12 @@ class TestWorkerSampler:
     def test_different_seeds_differ(self) -> None:
         """Different seeds produce different sequences."""
         settings = _d3_settings()
-        s1 = WorkerSampler(settings, worker_seed=111)
-        s2 = WorkerSampler(settings, worker_seed=222)
+        s1 = WorkerSampler(
+            settings, worker_seed=111, metadata_extractor=extract_circuit_metadata
+        )
+        s2 = WorkerSampler(
+            settings, worker_seed=222, metadata_extractor=extract_circuit_metadata
+        )
 
         syndromes_1 = [s1.sample()[0].tobytes() for _ in range(50)]
         syndromes_2 = [s2.sample()[0].tobytes() for _ in range(50)]
@@ -443,7 +452,9 @@ class TestWorkerSampler:
 
     def test_output_shapes(self) -> None:
         settings = _d3_settings()
-        sampler = WorkerSampler(settings, worker_seed=42)
+        sampler = WorkerSampler(
+            settings, worker_seed=42, metadata_extractor=extract_circuit_metadata
+        )
         syn, obs, meta, p = sampler.sample()
 
         assert syn.dtype == np.uint8
@@ -456,7 +467,9 @@ class TestWorkerSampler:
     def test_uniform_setting_selection(self) -> None:
         """All settings sampled roughly equally over many shots."""
         settings = _d3_settings()
-        sampler = WorkerSampler(settings, worker_seed=99)
+        sampler = WorkerSampler(
+            settings, worker_seed=99, metadata_extractor=extract_circuit_metadata
+        )
 
         p_counts: dict[float, int] = {}
         n = 400
@@ -470,7 +483,9 @@ class TestWorkerSampler:
 
     def test_empty_settings_raises(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
-            WorkerSampler([], worker_seed=42)
+            WorkerSampler(
+                [], worker_seed=42, metadata_extractor=extract_circuit_metadata
+            )
 
 
 class TestStreamingSurfaceCodeDataset:
@@ -481,6 +496,8 @@ class TestStreamingSurfaceCodeDataset:
         return StreamingSurfaceCodeDataset(
             settings=_d3_settings(),
             master_seed=42,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
 
     def test_yields_data_objects(self, d3_dataset: StreamingSurfaceCodeDataset) -> None:
@@ -521,8 +538,18 @@ class TestStreamingSurfaceCodeDataset:
     def test_deterministic(self) -> None:
         """Same master_seed produces identical sample sequences."""
         settings = _d3_settings()
-        ds1 = StreamingSurfaceCodeDataset(settings=settings, master_seed=77)
-        ds2 = StreamingSurfaceCodeDataset(settings=settings, master_seed=77)
+        ds1 = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=77,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
+        )
+        ds2 = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=77,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
+        )
 
         it1, it2 = iter(ds1), iter(ds2)
         for _ in range(20):
@@ -534,8 +561,18 @@ class TestStreamingSurfaceCodeDataset:
 
     def test_different_seeds_differ(self) -> None:
         settings = _d3_settings()
-        ds1 = StreamingSurfaceCodeDataset(settings=settings, master_seed=1)
-        ds2 = StreamingSurfaceCodeDataset(settings=settings, master_seed=2)
+        ds1 = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=1,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
+        )
+        ds2 = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=2,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
+        )
 
         it1, it2 = iter(ds1), iter(ds2)
         xs_1 = [next(it1).x.numpy().tobytes() for _ in range(50)]
@@ -545,7 +582,12 @@ class TestStreamingSurfaceCodeDataset:
     def test_empty_syndrome_handling(self) -> None:
         """Empty syndromes yield Data with num_fired=0 and empty tensors."""
         settings = _d3_settings()
-        ds = StreamingSurfaceCodeDataset(settings=settings, master_seed=42)
+        ds = StreamingSurfaceCodeDataset(
+            settings=settings,
+            master_seed=42,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
+        )
         it = iter(ds)
 
         found_empty = False
@@ -571,6 +613,8 @@ class TestStreamingSurfaceCodeDataset:
             settings=_d3_settings(),
             master_seed=42,
             include_p_feature=True,
+            contract=resolve_profile("memory").data_contract,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         data = next(iter(ds))
 
@@ -581,7 +625,12 @@ class TestStreamingSurfaceCodeDataset:
 
     def test_empty_settings_raises(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
-            StreamingSurfaceCodeDataset(settings=[], master_seed=42)
+            StreamingSurfaceCodeDataset(
+                settings=[],
+                master_seed=42,
+                contract=resolve_profile("memory").data_contract,
+                metadata_extractor=resolve_profile("memory").metadata_extractor,
+            )
 
 
 class TestCustomMetadataExtractor:
@@ -611,23 +660,10 @@ class TestCustomMetadataExtractor:
         syn, obs, meta, p = sampler.sample()
         assert isinstance(meta, CircuitMetadata)
 
-    def test_worker_sampler_default_extractor_matches_explicit(self) -> None:
-        """Omitting metadata_extractor is identical to passing
-        extract_circuit_metadata."""
-        settings = _d3_settings()
-        s_default = WorkerSampler(settings, worker_seed=77)
-        s_explicit = WorkerSampler(
-            settings,
-            worker_seed=77,
-            metadata_extractor=extract_circuit_metadata,
-        )
-
-        for _ in range(20):
-            syn_d, obs_d, meta_d, p_d = s_default.sample()
-            syn_e, obs_e, meta_e, p_e = s_explicit.sample()
-            np.testing.assert_array_equal(syn_d, syn_e)
-            np.testing.assert_array_equal(obs_d, obs_e)
-            assert p_d == p_e
+    def test_worker_sampler_rejects_an_omitted_extractor(self) -> None:
+        """No extractor is assumed: the operation's own is always passed."""
+        with pytest.raises(TypeError, match="metadata_extractor"):
+            WorkerSampler(_d3_settings(), worker_seed=77)
 
     def test_dataset_passes_extractor_to_sampler(self) -> None:
         """StreamingSurfaceCodeDataset threads the metadata_extractor
@@ -645,6 +681,7 @@ class TestCustomMetadataExtractor:
             settings=settings,
             master_seed=42,
             metadata_extractor=counting_extractor,
+            contract=resolve_profile("memory").data_contract,
         )
         it = iter(ds)
         next(it)
@@ -653,10 +690,10 @@ class TestCustomMetadataExtractor:
     def test_dataset_with_profile_contract_and_extractor(self) -> None:
         """Dataset parameterized by a profile's contract and extractor
         produces correct feature dimensions and label shape."""
-        from sampling.profile import MEMORY_PROFILE
+        from sampling.profile import resolve_profile
 
         settings = _d3_settings()
-        profile = MEMORY_PROFILE
+        profile = resolve_profile("memory")
         ds = StreamingSurfaceCodeDataset(
             settings=settings,
             master_seed=42,

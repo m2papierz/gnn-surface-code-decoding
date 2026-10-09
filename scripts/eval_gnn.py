@@ -39,107 +39,62 @@ from typing import Any
 import numpy as np
 import stim
 import torch
-from torch_geometric.data import Data
 
 from decoders import (
     BeliefMatchingDecoder,
     CorrelatedMatchingDecoder,
+    Decoder,
+    GNNCheckpoint,
     GNNDecoder,
     PyMatchingDecoder,
     TesseractDecoder,
+    load_gnn_checkpoint,
 )
 from evaluation.config import EvalConfig
 from evaluation.evaluator import (
     EvalReport,
-    EvalSet,
     discover_eval_sets,
     evaluate_point,
     load_eval_set,
 )
 from evaluation.stats import wilson_interval
-from model.decoder import build_model, collate_graphs
-from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
-from sampling.representation import DataContract
-from sampling.sampler import settings_from_circuit_dir
+from model.decoder import build_model
+from sampling.profile import resolve_profile
+from sampling.sampler import ExperimentPoint, settings_from_circuit_dir
 
 
 logger = logging.getLogger(__name__)
 
-EVAL_ROOT = Path("data/eval")
 CI_SHARD_ROOT = Path("data/ci_shard")
 
 
-def _load_model(
-    cfg: EvalConfig, device: torch.device
-) -> tuple[torch.nn.Module, DataContract, float, dict]:
-    """Load a trained GNN checkpoint.
-
-    Returns
-    -------
-    tuple of (model, contract, threshold, raw checkpoint dict)
-    """
+def _load_checkpoint(cfg: EvalConfig, device: torch.device) -> GNNCheckpoint:
+    """Load the configured checkpoint under the configured operation's contract."""
     if cfg.checkpoint is None:
         logger.error("Must specify checkpoint (via config or --checkpoint)")
         sys.exit(1)
 
-    ckpt = torch.load(cfg.checkpoint, weights_only=False, map_location=device)
-    ckpt_cfg = ckpt["config"]
-    threshold = ckpt.get("decision_threshold", 0.0)
-
-    contract = DataContract.from_checkpoint_config(ckpt_cfg)
-    model = build_model(
-        node_dim=contract.node_dim,
-        edge_dim=contract.edge_dim,
-        hidden_dim=ckpt_cfg.get("hidden_dim", 128),
-        num_layers=ckpt_cfg.get("num_layers", 6),
-        num_observables=contract.num_observables,
-        dropout=0.0,
-    ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
-
+    checkpoint = load_gnn_checkpoint(
+        cfg.checkpoint,
+        contract=resolve_profile(cfg.operation).data_contract,
+        device=device,
+    )
     logger.info(
         "Checkpoint: %s (threshold=%.4f, samples=%d)",
-        cfg.checkpoint,
-        threshold,
-        ckpt.get("samples_consumed", -1),
+        checkpoint.path,
+        checkpoint.decision_threshold,
+        checkpoint.samples_consumed,
     )
+    return checkpoint
 
-    return model, contract, threshold, ckpt
 
-
-def _build_dry_run_eval_set(shard_dir: Path) -> EvalSet:
-    """Load a CI shard as a minimal eval set for pipeline validation."""
-    manifest_path = shard_dir / "manifest.json"
-    if not manifest_path.exists():
-        logger.error("CI shard not found at %s", shard_dir)
-        sys.exit(1)
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    syndromes = np.load(shard_dir / "syndromes.npy").astype(np.uint8)
-    observables = np.load(shard_dir / "observables.npy").astype(np.uint8)
-    detector_coords = np.load(shard_dir / "detector_coords.npy").astype(np.float64)
-
-    if observables.ndim == 1:
-        observables = observables[:, np.newaxis]
-
-    circuit = stim.Circuit.from_file(manifest["circuit_file"])
-    base_meta = extract_circuit_metadata(
-        circuit, manifest["distance"], manifest["rounds"]
-    )
-
-    return EvalSet(
-        syndromes=syndromes,
-        observables=observables,
-        detector_coords=detector_coords,
-        distance=manifest["distance"],
-        rounds=manifest["rounds"],
-        error_prob=manifest["error_prob"],
-        num_shots=syndromes.shape[0],
-        circuit_file=manifest["circuit_file"],
-        manifest=manifest,
-        dem_edge_weights=base_meta.dem_edge_weights,
-    )
+def _require_operation(cfg: EvalConfig, operation: str, source: Path) -> None:
+    """Reject an artifact that belongs to another operation than the config's."""
+    if operation != cfg.operation:
+        raise ValueError(
+            f"{source} belongs to operation {operation!r}; the config evaluates "
+            f"{cfg.operation!r}"
+        )
 
 
 def _print_harness_results(report: EvalReport) -> None:
@@ -217,12 +172,11 @@ def _print_harness_results(report: EvalReport) -> None:
 
 def run_dry_run(cfg: EvalConfig) -> EvalReport:
     """Execute dry-run evaluation on one operation's CI shard."""
-    from sampling.profile import resolve_profile
-
     shard_dir = CI_SHARD_ROOT / cfg.operation
     logger.info("DRY RUN: evaluating on CI shard (%s)", shard_dir)
 
-    eval_set = _build_dry_run_eval_set(shard_dir)
+    eval_set = load_eval_set(shard_dir)
+    _require_operation(cfg, eval_set.operation, shard_dir)
     logger.info(
         "  Loaded: d=%d r=%d p=%.4f, %d shots",
         eval_set.distance,
@@ -232,31 +186,28 @@ def run_dry_run(cfg: EvalConfig) -> EvalReport:
     )
 
     profile = resolve_profile(cfg.operation)
+    contract = profile.data_contract
     model = build_model(
+        node_dim=contract.node_dim,
+        edge_dim=contract.edge_dim,
         hidden_dim=32,
         num_layers=2,
+        num_observables=contract.num_observables,
         dropout=0.0,
-        num_observables=profile.data_contract.num_observables,
     )
     gnn_decoder = GNNDecoder.from_metadata(
-        model=model,
-        metadata=eval_set.circuit_metadata,
+        model,
+        eval_set.circuit_metadata,
+        contract=contract,
         threshold=0.0,
         device=torch.device("cpu"),
         batch_size=64,
-        contract=profile.data_contract,
     )
-
-    circuit_path = Path(eval_set.circuit_file)
-    if not circuit_path.exists():
-        circuit_path = Path.cwd() / eval_set.circuit_file
-    mwpm_decoder = PyMatchingDecoder(circuit_path)
-
-    decoders = {"gnn": gnn_decoder, "mwpm": mwpm_decoder}
+    mwpm_decoder = PyMatchingDecoder(Path(eval_set.circuit_file))
 
     result = evaluate_point(
         eval_set,
-        decoders,
+        {"gnn": gnn_decoder, "mwpm": mwpm_decoder},
         reference_decoder="gnn",
         check_interval=eval_set.num_shots,
         metric_policy=profile.metric_policy,
@@ -276,12 +227,10 @@ def run_dry_run(cfg: EvalConfig) -> EvalReport:
 
 def run_harness(cfg: EvalConfig) -> EvalReport:
     """Execute full evaluation with a trained GNN checkpoint."""
-    from sampling.profile import resolve_profile
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    model, contract, threshold, ckpt = _load_model(cfg, device)
+    checkpoint = _load_checkpoint(cfg, device)
     profile = resolve_profile(cfg.operation)
 
     eval_dir = cfg.eval_root / cfg.operation
@@ -297,15 +246,16 @@ def run_harness(cfg: EvalConfig) -> EvalReport:
     report = EvalReport(
         metadata={
             "mode": "full",
-            "checkpoint": str(cfg.checkpoint),
-            "threshold": threshold,
+            "checkpoint": str(checkpoint.path),
+            "threshold": checkpoint.decision_threshold,
             "device": str(device),
-            "samples_consumed": ckpt.get("samples_consumed", -1),
+            "samples_consumed": checkpoint.samples_consumed,
         },
     )
 
     for ed in eval_dirs:
         eval_set = load_eval_set(ed)
+        _require_operation(cfg, eval_set.operation, ed)
         logger.info(
             "Evaluating %s d=%d r=%d p=%.4f (%d shots)...",
             eval_set.operation,
@@ -316,43 +266,22 @@ def run_harness(cfg: EvalConfig) -> EvalReport:
         )
 
         circuit_path = Path(eval_set.circuit_file)
-        if not circuit_path.exists():
-            circuit_path = Path.cwd() / eval_set.circuit_file
-
-        gnn_decoder = GNNDecoder.from_metadata(
-            model=model,
-            metadata=eval_set.circuit_metadata,
-            threshold=threshold,
-            device=device,
-            batch_size=cfg.batch_size,
-            contract=contract,
-        )
-        mwpm_decoder = PyMatchingDecoder(circuit_path)
-        correlated_decoder = CorrelatedMatchingDecoder(circuit_path)
-
-        decoders: dict = {
-            "gnn": gnn_decoder,
-            "mwpm": mwpm_decoder,
-            "correlated": correlated_decoder,
+        decoders: dict[str, Decoder] = {
+            "gnn": GNNDecoder(
+                checkpoint.model,
+                eval_set.circuit_metadata,
+                contract=checkpoint.contract,
+                threshold=checkpoint.decision_threshold,
+                device=device,
+                batch_size=cfg.batch_size,
+            ),
+            "mwpm": PyMatchingDecoder(circuit_path),
+            "correlated": CorrelatedMatchingDecoder(circuit_path),
         }
-
         if cfg.include_belief_matching:
-            try:
-                bm_decoder = BeliefMatchingDecoder(circuit_path)
-                decoders["belief_matching"] = bm_decoder
-            except ImportError:
-                logger.warning(
-                    "beliefmatching not available; skipping Belief-Matching decoder"
-                )
-
+            decoders["belief_matching"] = BeliefMatchingDecoder(circuit_path)
         if cfg.include_tesseract:
-            try:
-                tess_decoder = TesseractDecoder(circuit_path)
-                decoders["tesseract"] = tess_decoder
-            except ImportError:
-                logger.warning(
-                    "tesseract-decoder not available; skipping Tesseract decoder"
-                )
+            decoders["tesseract"] = TesseractDecoder(circuit_path)
 
         t0 = time.perf_counter()
         result = evaluate_point(
@@ -378,98 +307,64 @@ def run_harness(cfg: EvalConfig) -> EvalReport:
 
 
 def _evaluate_at_setting(
-    model: torch.nn.Module,
-    circuit_path: Path,
-    distance: int,
-    rounds: int,
-    error_prob: float,
-    threshold: float,
-    n_shots: int,
+    point: ExperimentPoint,
+    checkpoint: GNNCheckpoint,
+    cfg: EvalConfig,
     device: torch.device,
-    batch_size: int = 256,
-    seed: int = 99,
 ) -> dict:
-    """Evaluate GNN and MWPM on fresh shots from a single circuit.
+    """Evaluate GNN and MWPM on fresh shots from one circuit.
 
     Parameters
     ----------
-    model : torch.nn.Module
-        Trained GNN model in eval mode.
-    circuit_path : Path
-        Path to the ``.stim`` circuit file.
-    distance, rounds : int
-        Code distance and syndrome measurement rounds.
-    error_prob : float
-        Physical error probability.
-    threshold : float
-        GNN decision threshold (logit-space).
-    n_shots : int
-        Number of shots to sample and decode.
+    point : ExperimentPoint
+        Circuit to sample, of the config's operation.
+    checkpoint : GNNCheckpoint
+        Trained GNN, restored under that operation's contract.
+    cfg : EvalConfig
+        Supplies the shot count, sampler seed and inference batch size.
     device : torch.device
         Device for GNN inference.
-    batch_size : int
-        Batch size for GNN decoding.
-    seed : int
-        Stim sampler seed.
 
     Returns
     -------
     dict
         Per-setting results with LER and Wilson intervals for both decoders.
     """
-    circuit = stim.Circuit.from_file(str(circuit_path))
-    meta = extract_circuit_metadata(circuit, distance, rounds)
+    circuit = stim.Circuit.from_file(str(point.circuit_path))
+    metadata = resolve_profile(point.operation).metadata_extractor(
+        circuit, point.distance, point.rounds
+    )
 
-    sampler = circuit.compile_detector_sampler(seed=seed)
+    sampler = circuit.compile_detector_sampler(seed=cfg.seed)
     dets, obs = sampler.sample(
-        shots=n_shots, separate_observables=True, bit_packed=False
+        shots=cfg.shots, separate_observables=True, bit_packed=False
     )
     syndromes = dets.astype(np.uint8)
     observables = obs.astype(np.uint8)
 
-    mwpm_pred = PyMatchingDecoder(circuit_path).decode_batch(syndromes)
+    gnn_decoder = GNNDecoder(
+        checkpoint.model,
+        metadata,
+        contract=checkpoint.contract,
+        threshold=checkpoint.decision_threshold,
+        device=device,
+        batch_size=cfg.batch_size,
+    )
+    gnn_pred = gnn_decoder.decode_batch(syndromes)
+    mwpm_pred = PyMatchingDecoder(point.circuit_path).decode_batch(syndromes)
+    gnn_errors = int(np.any(gnn_pred != observables, axis=1).sum())
     mwpm_errors = int(np.any(mwpm_pred != observables, axis=1).sum())
 
-    model.eval()
-    gnn_errors = 0
-    use_amp = device.type == "cuda"
-
-    for start in range(0, n_shots, batch_size):
-        end = min(start + batch_size, n_shots)
-        data_list = []
-        for i in range(start, end):
-            graph = build_fired_detector_graph(syndromes[i], meta)
-            data = Data(
-                x=torch.from_numpy(graph.node_features),
-                edge_index=torch.from_numpy(graph.edge_index),
-                edge_attr=torch.from_numpy(graph.edge_features),
-                num_fired=torch.tensor(graph.num_fired, dtype=torch.long),
-            )
-            data_list.append(data)
-
-        batch = collate_graphs(data_list, device)
-        with (
-            torch.no_grad(),
-            torch.autocast(
-                device_type=device.type, enabled=use_amp, dtype=torch.bfloat16
-            ),
-        ):
-            logits = model(batch)
-
-        pred = (logits > threshold).float()
-        target = torch.from_numpy(observables[start:end]).to(device, pred.dtype)
-        gnn_errors += int((pred != target).any(dim=1).sum().item())
-
-    gnn_ler = gnn_errors / n_shots
-    mwpm_ler = mwpm_errors / n_shots
-    gnn_ci = wilson_interval(gnn_errors, n_shots)
-    mwpm_ci = wilson_interval(mwpm_errors, n_shots)
+    gnn_ler = gnn_errors / cfg.shots
+    mwpm_ler = mwpm_errors / cfg.shots
+    gnn_ci = wilson_interval(gnn_errors, cfg.shots)
+    mwpm_ci = wilson_interval(mwpm_errors, cfg.shots)
 
     return {
-        "distance": distance,
-        "rounds": rounds,
-        "error_prob": error_prob,
-        "n_shots": n_shots,
+        "distance": point.distance,
+        "rounds": point.rounds,
+        "error_prob": point.error_prob,
+        "n_shots": cfg.shots,
         "gnn_errors": gnn_errors,
         "gnn_ler": gnn_ler,
         "gnn_ci_95": [gnn_ci.lower, gnn_ci.upper],
@@ -477,20 +372,22 @@ def _evaluate_at_setting(
         "mwpm_ler": mwpm_ler,
         "mwpm_ci_95": [mwpm_ci.lower, mwpm_ci.upper],
         "gnn_le_mwpm": gnn_ler <= mwpm_ler,
-        "threshold": threshold,
+        "threshold": checkpoint.decision_threshold,
     }
 
 
 def run_sanity(cfg: EvalConfig) -> list[dict]:
     """Execute sanity evaluation on fresh Stim samples."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, _contract, threshold, ckpt = _load_model(cfg, device)
+    checkpoint = _load_checkpoint(cfg, device)
 
     settings = settings_from_circuit_dir(
         cfg.circuit_dir,
         distances=cfg.distances,
         error_probs=cfg.error_probs,
     )
+    for point in settings:
+        _require_operation(cfg, point.operation, point.circuit_path)
     dist_label = ",".join(str(d) for d in cfg.distances) if cfg.distances else "all"
     logger.info("Found %d settings for d={%s}", len(settings), dist_label)
 
@@ -502,18 +399,7 @@ def run_sanity(cfg: EvalConfig) -> list[dict]:
             s.rounds,
             s.error_prob,
         )
-        r = _evaluate_at_setting(
-            model=model,
-            circuit_path=s.circuit_path,
-            distance=s.distance,
-            rounds=s.rounds,
-            error_prob=s.error_prob,
-            threshold=threshold,
-            n_shots=cfg.shots,
-            device=device,
-            batch_size=cfg.batch_size,
-            seed=cfg.seed,
-        )
+        r = _evaluate_at_setting(s, checkpoint, cfg, device)
         results.append(r)
         parity = "PASS" if r["gnn_le_mwpm"] else "FAIL"
         logger.info(
@@ -527,15 +413,14 @@ def run_sanity(cfg: EvalConfig) -> list[dict]:
             parity,
         )
 
-    _print_sanity_results(results, cfg, threshold, ckpt)
+    _print_sanity_results(results, cfg, checkpoint)
     return results
 
 
 def _print_sanity_results(
     results: list[dict],
     cfg: EvalConfig,
-    threshold: float,
-    ckpt: dict,
+    checkpoint: GNNCheckpoint,
 ) -> None:
     """Print sanity evaluation results as a formatted table."""
     distances_seen = sorted({r["distance"] for r in results})
@@ -560,8 +445,8 @@ def _print_sanity_results(
         )
     print()
     print(f"Shots per setting: {cfg.shots}")
-    print(f"Decision threshold: {threshold:.4f}")
-    print(f"Samples consumed during training: {ckpt.get('samples_consumed', -1)}")
+    print(f"Decision threshold: {checkpoint.decision_threshold:.4f}")
+    print(f"Samples consumed during training: {checkpoint.samples_consumed}")
 
 
 def parse_args(

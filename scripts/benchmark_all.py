@@ -64,6 +64,7 @@ from sampling.graph import CircuitMetadata
 from sampling.profile import resolve_profile
 from sampling.representation import (
     SUPPORTED_FAST_PATH_VERSIONS,
+    DataContract,
     resolve_builder,
 )
 
@@ -257,6 +258,7 @@ def _run_device_path(
     device: torch.device,
     n_iters: int,
     *,
+    contract: DataContract,
     end_to_end: bool,
 ) -> dict | None:
     """Time the bucketed forward, optionally including the graph build.
@@ -291,7 +293,7 @@ def _run_device_path(
         )
 
     prebuilt = build()
-    runner = BucketedGraphRunner(model, batch_size=len(syndromes))
+    runner = BucketedGraphRunner(model, contract=contract, batch_size=len(syndromes))
     torch.cuda.reset_peak_memory_stats()
 
     def fn() -> None:
@@ -440,6 +442,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                             metadata,
                             device,
                             args.n_iters,
+                            contract=contract,
                             end_to_end=e2e,
                         ),
                     )

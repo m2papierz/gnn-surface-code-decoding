@@ -17,6 +17,7 @@ from typing import Any
 import torch
 from torch_geometric.loader import DataLoader
 
+from sampling.profile import resolve_profile
 from sampling.representation import DataContract
 from sampling.sampler import settings_from_circuit_dir
 from sampling.seeding import stable_seed
@@ -82,9 +83,7 @@ class Trainer:
         )
 
         self.train_loader = make_streaming_loader(settings, self.cfg, self.device)
-
-        train_ds = self.train_loader.dataset
-        self._contract = train_ds.contract  # type: ignore[union-attr]
+        self._contract = resolve_profile(self.cfg.operation).data_contract
 
         val_seed = stable_seed("val", f"seed={self.cfg.seed}", base=self.cfg.seed)
         val_samples = make_frozen_val_samples(
@@ -111,9 +110,9 @@ class Trainer:
         ckpt = load_checkpoint(
             self.cfg.resume, self._state, self.cfg, contract=self._contract
         )
-        self.samples_consumed = ckpt.get("samples_consumed", 0)
-        self.best_metric = ckpt.get("best_metric", float("inf"))
-        self._decision_threshold = ckpt.get("decision_threshold", 0.0)
+        self.samples_consumed = ckpt["samples_consumed"]
+        self.best_metric = ckpt["best_metric"]
+        self._decision_threshold = ckpt["decision_threshold"]
         logger.info(
             "Resuming from %d samples (best_metric=%.6f, threshold=%.3f)",
             self.samples_consumed,

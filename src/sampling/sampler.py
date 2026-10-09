@@ -8,8 +8,7 @@ files.
 from __future__ import annotations
 
 import logging
-import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,14 +16,11 @@ import numpy as np
 import stim
 
 from sampling.experiment import ExperimentKey, circuit_key, validate_operation_name
-from sampling.graph import CircuitMetadata, extract_circuit_metadata
+from sampling.graph import CircuitMetadata, MetadataExtractor
 from sampling.seeding import stable_seed
 
 
 logger = logging.getLogger(__name__)
-
-
-_CIRCUIT_FILENAME_RE = re.compile(r"d(\d+)_r(\d+)_p(.+)\.stim$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,11 +106,10 @@ def settings_from_circuit_dir(
     """Discover experiment points from committed ``.stim`` files.
 
     Every ``.stim`` file directly in ``circuit_dir`` is resolved to its
-    ``(operation, d, r, p)`` identity.  The manifest beside a circuit is
-    authoritative; the ``d{d}_r{r}_p{p}.stim`` filename is read only for a
-    circuit that carries none.  Discovery does not descend into
-    subdirectories, so a root holding one operation's circuits is discovered
-    by pointing this function at that root.
+    ``(operation, d, r, p)`` identity by the manifest beside it; a filename
+    carries none.  Discovery does not descend into subdirectories, so a root
+    holding one operation's circuits is discovered by pointing this function
+    at that root.
 
     Parameters
     ----------
@@ -134,6 +129,8 @@ def settings_from_circuit_dir(
     ------
     NotADirectoryError
         If ``circuit_dir`` does not exist or is not a directory.
+    FileNotFoundError
+        If a circuit in the directory carries no manifest.
     ValueError
         If no matching circuit files are found, or if two circuits in the
         directory resolve to the same experiment key.
@@ -147,17 +144,8 @@ def settings_from_circuit_dir(
 
     points: list[ExperimentPoint] = []
     claimed: dict[ExperimentKey, Path] = {}
-    for f in sorted(circuit_dir.iterdir()):
-        m = _CIRCUIT_FILENAME_RE.match(f.name)
-        if m is None:
-            continue
-
-        key = circuit_key(
-            f,
-            distance=int(m.group(1)),
-            rounds=int(m.group(2)),
-            error_prob=float(m.group(3).replace("_", ".")),
-        )
+    for f in sorted(circuit_dir.glob("*.stim")):
+        key = circuit_key(f)
 
         # Two circuits under one identity would be sampled as two settings and
         # silently double the weight of that point in the training mixture.
@@ -207,6 +195,9 @@ class WorkerSampler:
     worker_seed : int
         Deterministic per-worker seed (derived from master seed + worker id
         via BLAKE2b ``stable_seed``).
+    metadata_extractor : MetadataExtractor
+        The operation's extractor, building the metadata its representation's
+        builder reads.
     weights : ndarray, shape ``(len(settings),)``, optional
         Per-setting sampling probabilities.  If ``None``, settings are
         sampled uniformly.  Weights are normalized internally.
@@ -216,9 +207,9 @@ class WorkerSampler:
         self,
         settings: Sequence[CircuitSetting],
         worker_seed: int,
+        *,
+        metadata_extractor: MetadataExtractor,
         weights: np.ndarray | None = None,
-        metadata_extractor: Callable[[stim.Circuit, int, int], CircuitMetadata]
-        | None = None,
     ) -> None:
         if not settings:
             raise ValueError("At least one CircuitSetting required")
@@ -242,16 +233,11 @@ class WorkerSampler:
         else:
             self._weights = None
 
-        _extractor = (
-            metadata_extractor
-            if metadata_extractor is not None
-            else extract_circuit_metadata
-        )
         for i, s in enumerate(settings):
             circuit = stim.Circuit.from_file(str(s.circuit_path))
             sampler_seed = stable_seed("sampler", f"idx={i}", base=worker_seed)
             compiled = circuit.compile_detector_sampler(seed=sampler_seed)
-            meta = _extractor(circuit, s.distance, s.rounds)
+            meta = metadata_extractor(circuit, s.distance, s.rounds)
 
             self._samplers.append(compiled)
             self._metadata.append(meta)

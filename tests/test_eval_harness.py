@@ -26,6 +26,7 @@ from evaluation.evaluator import (
 from evaluation.stats import EvalOutcome, WilsonInterval
 from model.decoder import build_model
 from sampling.graph import CircuitMetadata
+from sampling.profile import resolve_profile
 
 
 CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
@@ -467,13 +468,21 @@ class TestPyMatchingDecoder:
 class TestGNNDecoder:
     @pytest.fixture()
     def gnn_decoder(self, circuit_metadata: CircuitMetadata) -> GNNDecoder:
-        model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
+        model = build_model(
+            hidden_dim=32,
+            num_layers=2,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
         return GNNDecoder.from_metadata(
             model=model,
             metadata=circuit_metadata,
             threshold=0.0,
             device=torch.device("cpu"),
             batch_size=32,
+            contract=resolve_profile("memory").data_contract,
         )
 
     def test_satisfies_protocol(self, gnn_decoder: GNNDecoder) -> None:
@@ -508,13 +517,21 @@ class TestDryRunEndToEnd:
         circuit_metadata: CircuitMetadata,
     ) -> None:
         """Dry-run produces valid results, MWPM has errors, report serializes."""
-        model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
+        model = build_model(
+            hidden_dim=32,
+            num_layers=2,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
         gnn_decoder = GNNDecoder.from_metadata(
             model=model,
             metadata=circuit_metadata,
             threshold=0.0,
             device=torch.device("cpu"),
             batch_size=64,
+            contract=resolve_profile("memory").data_contract,
         )
 
         circuit_path = CIRCUIT_DIR / "d3_r3_p0_01.stim"

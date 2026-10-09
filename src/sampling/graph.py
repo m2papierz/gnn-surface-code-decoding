@@ -7,6 +7,7 @@ GNN training and inference.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -155,6 +156,10 @@ class CircuitMetadata:
                 f"layout phase_ids shape {self.layout.phase_ids.shape} != "
                 f"expected ({D},)"
             )
+
+
+type MetadataExtractor = Callable[[stim.Circuit, int, int], CircuitMetadata]
+"""``(circuit, distance, rounds) -> CircuitMetadata``; each operation names its own."""
 
 
 @dataclass(frozen=True, slots=True)

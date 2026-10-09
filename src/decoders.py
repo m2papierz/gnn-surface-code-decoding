@@ -7,6 +7,7 @@ Thin adapters that give GNN models, PyMatching, and Belief-Matching a uniform
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -17,9 +18,19 @@ import torch
 from numpy.typing import NDArray
 from torch_geometric.data import Data
 
-from model.decoder import collate_graphs
+from model.decoder import (
+    QECDecoder,
+    build_model,
+    collate_graphs,
+    require_model_contract,
+)
 from sampling.graph import CircuitMetadata
-from sampling.representation import SPATIAL_MEMORY, DataContract, resolve_builder
+from sampling.representation import (
+    DataContract,
+    require_contract,
+    requires_layout,
+    resolve_builder,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -155,34 +166,44 @@ class GNNDecoder:
 
     Parameters
     ----------
-    model : torch.nn.Module
-        Trained QECDecoder model (eval mode).
+    model : QECDecoder
+        Trained model; put in eval mode.
     metadata : CircuitMetadata
         Circuit metadata for graph construction.
+    contract : DataContract
+        Contract the model was trained under; selects the graph builder and
+        must match the model's input and output widths.
     threshold : float
         Decision boundary for logit => binary prediction.
     device : torch.device
         Device for inference.
     batch_size : int
         Inference batch size.
+
+    Raises
+    ------
+    ValueError
+        If the model's widths are not the contract's, or the contract's
+        representation reads a logical-operation layout the metadata lacks.
     """
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: QECDecoder,
         metadata: CircuitMetadata,
+        *,
+        contract: DataContract,
         threshold: float = 0.0,
         device: torch.device | None = None,
         batch_size: int = 256,
-        contract: DataContract = SPATIAL_MEMORY,
     ) -> None:
-        version = contract.version
-        if version != "spatial" and metadata.layout is None:
+        require_model_contract(model, contract)
+        if requires_layout(contract.version) and metadata.layout is None:
             raise ValueError(
-                f"Contract requires representation {version!r} but the "
-                f"CircuitMetadata lacks phased fields: it carries no "
-                f"logical-operation layout. The eval set must carry the metadata "
-                f"its representation needs."
+                f"Contract representation {contract.version!r} reads a "
+                f"logical-operation layout, but the CircuitMetadata lacks phased "
+                f"fields. The eval set must carry the metadata its representation "
+                f"needs."
             )
         self._model = model
         self._metadata = metadata
@@ -190,7 +211,7 @@ class GNNDecoder:
         self._device = device or torch.device("cpu")
         self._batch_size = batch_size
         self._contract = contract
-        self._builder = resolve_builder(version)
+        self._builder = resolve_builder(contract.version)
         self._model.eval()
 
     @property
@@ -268,29 +289,30 @@ class GNNDecoder:
     @classmethod
     def from_metadata(
         cls,
-        model: torch.nn.Module,
+        model: QECDecoder,
         metadata: CircuitMetadata,
+        *,
+        contract: DataContract,
         threshold: float = 0.0,
         device: torch.device | None = None,
         batch_size: int = 256,
-        contract: DataContract = SPATIAL_MEMORY,
     ) -> GNNDecoder:
-        """Construct from an already-loaded model and metadata.
+        """Construct from an already-loaded model, moving it to *device*.
 
         Parameters
         ----------
-        model : torch.nn.Module
+        model : QECDecoder
             Model instance (will be put in eval mode).
         metadata : CircuitMetadata
             Pre-extracted circuit metadata.
+        contract : DataContract
+            Data contract (controls output shape and builder selection).
         threshold : float
             Decision threshold for logit => prediction.
         device : torch.device or None
             Target device.
         batch_size : int
             Inference batch size.
-        contract : DataContract
-            Data contract (controls output shape and builder selection).
 
         Returns
         -------
@@ -298,15 +320,97 @@ class GNNDecoder:
         """
         if device is None:
             device = torch.device("cpu")
-        model = model.to(device)
         return cls(
-            model=model,
-            metadata=metadata,
+            model.to(device),
+            metadata,
+            contract=contract,
             threshold=threshold,
             device=device,
             batch_size=batch_size,
-            contract=contract,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class GNNCheckpoint:
+    """A trained GNN restored for inference, with what its checkpoint records.
+
+    Parameters
+    ----------
+    path : Path
+        Checkpoint file the model was restored from.
+    model : QECDecoder
+        Restored model, in eval mode on the requested device.
+    contract : DataContract
+        Contract the model was trained under.
+    decision_threshold : float
+        Logit threshold the trainer calibrated on validation.
+    samples_consumed : int
+        Training samples consumed when the checkpoint was written.
+    """
+
+    path: Path
+    model: QECDecoder
+    contract: DataContract
+    decision_threshold: float
+    samples_consumed: int
+
+
+def load_gnn_checkpoint(
+    path: Path, *, contract: DataContract, device: torch.device
+) -> GNNCheckpoint:
+    """Restore a trained GNN for inference under the contract it must serve.
+
+    Parameters
+    ----------
+    path : Path
+        Checkpoint written by the trainer.
+    contract : DataContract
+        The contract of the operation being decoded, i.e. its profile's
+        ``data_contract``.
+    device : torch.device
+        Device the model is restored onto.
+
+    Returns
+    -------
+    GNNCheckpoint
+
+    Raises
+    ------
+    KeyError
+        If the checkpoint lacks a key the trainer always writes, naming it.
+    ValueError
+        If the checkpoint was trained under a different contract.
+    """
+    checkpoint = torch.load(path, weights_only=False, map_location=device)
+    try:
+        config = checkpoint["config"]
+        saved_contract = DataContract.from_checkpoint_config(config)
+        hidden_dim = config["hidden_dim"]
+        num_layers = config["num_layers"]
+        state_dict = checkpoint["model_state_dict"]
+        decision_threshold = float(checkpoint["decision_threshold"])
+        samples_consumed = int(checkpoint["samples_consumed"])
+    except KeyError as exc:
+        raise KeyError(f"Checkpoint {path} has no {exc.args[0]!r}") from exc
+    require_contract(contract, saved_contract, source=path)
+
+    model = build_model(
+        node_dim=contract.node_dim,
+        edge_dim=contract.edge_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_observables=contract.num_observables,
+        dropout=0.0,
+    ).to(device)
+    model.load_state_dict(state_dict)
+    model.eval()
+    return GNNCheckpoint(
+        path=path,
+        model=model,
+        contract=contract,
+        decision_threshold=decision_threshold,
+        samples_consumed=samples_consumed,
+    )
 
 
 class BeliefMatchingDecoder:
@@ -456,7 +560,9 @@ __all__ = [
     "BeliefMatchingDecoder",
     "CorrelatedMatchingDecoder",
     "Decoder",
+    "GNNCheckpoint",
     "GNNDecoder",
     "PyMatchingDecoder",
     "TesseractDecoder",
+    "load_gnn_checkpoint",
 ]

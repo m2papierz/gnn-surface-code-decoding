@@ -27,9 +27,6 @@ CIRCUIT_PATH = Path("data/circuits/memory/d3_r3_p0_01.stim")
 OUTPUT_ROOT = Path("data/ci_shard")
 SEED = 20240101
 NUM_SHOTS = 256
-DISTANCE = 3
-ROUNDS = 3
-ERROR_PROB = 0.01
 
 
 def _sha256(path: Path) -> str:
@@ -39,9 +36,7 @@ def _sha256(path: Path) -> str:
 def main() -> None:
     # The shard inherits the identity of the circuit it is sampled from, and
     # is placed under that operation's root rather than a path literal.
-    key = circuit_key(
-        CIRCUIT_PATH, distance=DISTANCE, rounds=ROUNDS, error_prob=ERROR_PROB
-    )
+    key = circuit_key(CIRCUIT_PATH)
     output_dir = OUTPUT_ROOT / key.operation
 
     circuit = stim.Circuit.from_file(str(CIRCUIT_PATH))

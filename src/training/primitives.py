@@ -8,6 +8,7 @@ orchestrators that compose these functions.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
@@ -27,7 +28,8 @@ from torch_geometric.loader import DataLoader
 
 from model.dataset import StreamingSurfaceCodeDataset
 from model.decoder import QECDecoder, build_model
-from sampling.representation import DataContract
+from sampling.profile import resolve_profile
+from sampling.representation import DataContract, require_contract
 from sampling.sampler import CircuitSetting
 from training.config import TrainConfig
 from training.loss import build_criterion
@@ -98,8 +100,6 @@ def resolve_run_dir(
     Path
         ``output_dir / <operation> / <distance_segment> / <strategy>``.
     """
-    from sampling.profile import resolve_profile
-
     profile = resolve_profile(operation)
     if distances is not None and len(distances) == 1:
         distance_segment = f"d{distances[0]}"
@@ -413,8 +413,8 @@ def load_checkpoint(
     state: TrainingState,
     cfg: TrainConfig,
     *,
+    contract: DataContract,
     restore_optimizer: bool = True,
-    contract: DataContract | None = None,
 ) -> dict[str, Any]:
     """Load a checkpoint and restore training state.
 
@@ -426,61 +426,48 @@ def load_checkpoint(
         Training state to restore into.
     cfg : TrainConfig
         Current config (checked for architecture compatibility).
+    contract : DataContract
+        Contract the run trains under; the checkpoint's must equal it.
     restore_optimizer : bool
         If ``True`` (default), restore optimizer and scheduler state.
         Set to ``False`` for warm-start (model weights only).
-    contract : DataContract, optional
-        If provided, the checkpoint's contract is validated against it.
 
     Returns
     -------
     dict
         The raw checkpoint dict (callers extract counters).
+
+    Raises
+    ------
+    KeyError
+        If the checkpoint lacks a key the trainer always writes, naming it.
+    ValueError
+        If the checkpoint's architecture or contract differs from the run's.
     """
     ckpt = torch.load(path, weights_only=False)
+    try:
+        ckpt_cfg = ckpt["config"]
+        saved_architecture = {
+            key: ckpt_cfg[key] for key in ("hidden_dim", "num_layers")
+        }
+        saved_contract = DataContract.from_checkpoint_config(ckpt_cfg)
+    except KeyError as exc:
+        raise KeyError(f"Checkpoint {path} has no {exc.args[0]!r}") from exc
 
-    ckpt_cfg = ckpt.get("config", {})
-    for key in ("hidden_dim", "num_layers"):
+    for key, saved in saved_architecture.items():
         current = getattr(cfg, key)
-        saved = ckpt_cfg.get(key)
-        if saved is not None and saved != current:
+        if saved != current:
             raise ValueError(
                 f"Config mismatch on resume: {key}={current}, "
-                f"checkpoint has {key}={saved}"
+                f"checkpoint {path} has {key}={saved}"
             )
-
-    if contract is not None:
-        saved_contract = DataContract.from_checkpoint_config(ckpt_cfg)
-        if saved_contract.version != contract.version:
-            raise ValueError(
-                f"Representation mismatch on resume: current version "
-                f"{contract.version!r}, checkpoint has "
-                f"{saved_contract.version!r}"
-            )
-        if (
-            saved_contract.node_dim != contract.node_dim
-            or saved_contract.edge_dim != contract.edge_dim
-        ):
-            raise ValueError(
-                f"Dimension mismatch on resume: current "
-                f"({contract.node_dim}, {contract.edge_dim}), "
-                f"checkpoint has ({saved_contract.node_dim}, "
-                f"{saved_contract.edge_dim})"
-            )
-        if saved_contract.num_observables != contract.num_observables:
-            raise ValueError(
-                f"Observable count mismatch on resume: current "
-                f"{contract.num_observables}, checkpoint has "
-                f"{saved_contract.num_observables}"
-            )
+    require_contract(contract, saved_contract, source=path)
 
     state.model.load_state_dict(ckpt["model_state_dict"])
 
     if restore_optimizer:
-        if "optimizer_state_dict" in ckpt:
-            state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        if "scheduler_state_dict" in ckpt:
-            state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
 
     return ckpt
 
@@ -509,8 +496,6 @@ def make_streaming_loader(
     -------
     DataLoader
     """
-    from sampling.profile import resolve_profile
-
     profile = resolve_profile(cfg.operation)
     ds = StreamingSurfaceCodeDataset(
         settings=settings,
@@ -560,10 +545,6 @@ def make_frozen_val_samples(
     list
         Frozen list of PyG ``Data`` objects.
     """
-    import itertools
-
-    from sampling.profile import resolve_profile
-
     profile = resolve_profile(cfg.operation)
     ds = StreamingSurfaceCodeDataset(
         settings=settings,

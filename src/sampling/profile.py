@@ -13,14 +13,21 @@ a config-supplied class path.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any
 
 import numpy as _np
 
 from sampling.experiment import validate_operation_name
+from sampling.graph import (
+    CircuitMetadata,
+    LogicalOperationLayout,
+    MetadataExtractor,
+    extract_circuit_metadata,
+)
 from sampling.representation import (
     DataContract,
     LabelSpec,
@@ -31,8 +38,6 @@ from sampling.representation import (
 
 if TYPE_CHECKING:
     import stim
-
-    from sampling.graph import CircuitMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,8 +66,8 @@ class OperationProfile:
         Lowercase identifier matching the experiment key convention.
     circuit_root : Path
         Relative path to the operation's circuit directory.
-    metadata_extractor : callable
-        ``(stim.Circuit, distance, rounds) -> CircuitMetadata``.
+    metadata_extractor : MetadataExtractor
+        Builds the circuit metadata the representation's builder reads.
     representation_version : str
         Representation version tag (e.g. ``"spatial"``).
     observable_names : tuple of str
@@ -75,7 +80,7 @@ class OperationProfile:
 
     operation: str
     circuit_root: Path
-    metadata_extractor: Callable[["stim.Circuit", int, int], "CircuitMetadata"]
+    metadata_extractor: MetadataExtractor
     representation_version: str
     observable_names: tuple[str, ...]
     metric_policy: MetricPolicy
@@ -144,30 +149,55 @@ def registered_operations() -> frozenset[str]:
     return frozenset(_REGISTRY)
 
 
-def _register_memory() -> OperationProfile:
-    from sampling.graph import extract_circuit_metadata
+def require_operation(fields: Mapping[str, Any]) -> OperationProfile:
+    """Resolve the profile named by the ``operation`` field of a config.
 
-    profile = OperationProfile(
+    A config states its operation; there is none to fall back to.
+
+    Parameters
+    ----------
+    fields : Mapping
+        Config field name to value.
+
+    Returns
+    -------
+    OperationProfile
+
+    Raises
+    ------
+    ValueError
+        If the fields name no operation, or an unregistered one; both list the
+        registered operations.
+    """
+    if "operation" not in fields:
+        raise ValueError(f"Config sets no operation; set one of {sorted(_REGISTRY)}")
+    return resolve_profile(fields["operation"])
+
+
+def _register(profile: OperationProfile) -> None:
+    if profile.operation in _REGISTRY:
+        raise ValueError(f"Operation {profile.operation!r} is registered twice")
+    _REGISTRY[profile.operation] = profile
+
+
+_register(
+    OperationProfile(
         operation="memory",
         circuit_root=Path("data/circuits/memory"),
         metadata_extractor=extract_circuit_metadata,
         representation_version="spatial",
         observable_names=("logical_observable",),
         metric_policy=MetricPolicy(include_per_round_ler=True),
-        space_time_convention="per_round_cycle",
         run_dir_segment="memory",
+        space_time_convention="per_round_cycle",
     )
-    _REGISTRY[profile.operation] = profile
-    return profile
-
-
-MEMORY_PROFILE: Final[OperationProfile] = _register_memory()
+)
 
 
 def _make_logical_op_extractor(
     circuit_root: Path,
     observable_names: tuple[str, ...],
-) -> Callable[["stim.Circuit", int, int], "CircuitMetadata"]:
+) -> MetadataExtractor:
     """Build a metadata extractor for a logical operation.
 
     The returned function reads the circuit's manifest to obtain
@@ -181,17 +211,10 @@ def _make_logical_op_extractor(
     observable_names : tuple of str
         Ordered observable names from the profile.
     """
-    import json
 
     def _extractor(
-        circuit: "stim.Circuit", distance: int, rounds: int
-    ) -> "CircuitMetadata":
-        from sampling.graph import (
-            CircuitMetadata,
-            LogicalOperationLayout,
-            extract_circuit_metadata,
-        )
-
+        circuit: stim.Circuit, distance: int, rounds: int
+    ) -> CircuitMetadata:
         base = extract_circuit_metadata(circuit, distance, rounds)
 
         prefix = f"d{distance}_r{rounds}_"
@@ -245,8 +268,8 @@ def _make_logical_op_extractor(
     return _extractor
 
 
-def _register_zz_merge_split() -> OperationProfile:
-    profile = OperationProfile(
+_register(
+    OperationProfile(
         operation="zz_merge_split",
         circuit_root=Path("data/circuits/zz_merge_split"),
         metadata_extractor=_make_logical_op_extractor(
@@ -256,20 +279,16 @@ def _register_zz_merge_split() -> OperationProfile:
         representation_version="phased",
         observable_names=("Z_0", "Z_1"),
         metric_policy=MetricPolicy(include_per_round_ler=False),
-        space_time_convention="per_shot",
         run_dir_segment="zz_merge_split",
+        space_time_convention="per_shot",
     )
-    _REGISTRY[profile.operation] = profile
-    return profile
-
-
-_register_zz_merge_split()
+)
 
 
 __all__ = [
-    "MEMORY_PROFILE",
     "MetricPolicy",
     "OperationProfile",
     "registered_operations",
+    "require_operation",
     "resolve_profile",
 ]

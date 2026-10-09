@@ -337,7 +337,9 @@ class TestEncoderEquivalence:
         from model.encoder import DetectorGraphEncoder
 
         torch.manual_seed(0)
-        encoder = DetectorGraphEncoder(hidden_dim=64, num_layers=3, dropout=0.0)
+        encoder = DetectorGraphEncoder(
+            hidden_dim=64, num_layers=3, dropout=0.0, node_dim=6, edge_dim=6
+        )
         encoder = encoder.cuda().eval()
 
         x = torch.randn(24, encoder.node_dim).cuda()

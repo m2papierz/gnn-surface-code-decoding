@@ -16,13 +16,12 @@ import pytest
 
 from sampling.graph import extract_circuit_metadata
 from sampling.profile import (
-    MEMORY_PROFILE,
     MetricPolicy,
     OperationProfile,
     registered_operations,
     resolve_profile,
 )
-from sampling.representation import SPATIAL, SPATIAL_MEMORY
+from sampling.representation import SPATIAL, DataContract, LabelSpec
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -92,22 +91,27 @@ class TestOperationProfileValidation:
 
     def test_frozen(self) -> None:
         with pytest.raises(AttributeError):
-            MEMORY_PROFILE.operation = "x"  # type: ignore[misc]
+            resolve_profile("memory").operation = "x"  # type: ignore[misc]
 
 
 class TestMemoryProfile:
     def test_data_contract_matches_spatial_memory(self) -> None:
-        assert MEMORY_PROFILE.data_contract == SPATIAL_MEMORY
+        assert resolve_profile("memory").data_contract == DataContract(
+            representation=SPATIAL,
+            labels=LabelSpec(
+                num_observables=1, observable_names=("logical_observable",)
+            ),
+        )
 
     def test_data_contract_representation_matches_spatial(self) -> None:
-        contract = MEMORY_PROFILE.data_contract
+        contract = resolve_profile("memory").data_contract
         assert contract.representation == SPATIAL
         assert contract.node_dim == 6
         assert contract.edge_dim == 6
         assert contract.version == "spatial"
 
     def test_data_contract_labels_match_memory(self) -> None:
-        contract = MEMORY_PROFILE.data_contract
+        contract = resolve_profile("memory").data_contract
         assert contract.num_observables == 1
         assert contract.labels.observable_names == ("logical_observable",)
 
@@ -115,7 +119,7 @@ class TestMemoryProfile:
 class TestResolution:
     def test_resolve_memory(self) -> None:
         profile = resolve_profile("memory")
-        assert profile is MEMORY_PROFILE
+        assert profile is resolve_profile("memory")
 
     def test_unknown_raises_listing_registered(self) -> None:
         with pytest.raises(ValueError, match="Unknown operation") as exc_info:
@@ -167,6 +171,7 @@ class TestRegistryRoundTrip:
                 settings=settings,
                 master_seed=42,
                 contract=contract,
+                metadata_extractor=profile.metadata_extractor,
             )
             sample = next(iter(ds))
             assert sample.x.shape[1] == contract.node_dim

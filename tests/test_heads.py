@@ -51,7 +51,7 @@ class TestLogicalHead:
         assert logits.shape == (2, 3)
 
     def test_ignores_extra_kwargs(self) -> None:
-        head = LogicalHead(hidden_dim=16, dropout=0.0)
+        head = LogicalHead(hidden_dim=16, dropout=0.0, num_observables=1)
         h = torch.randn(5, 16)
         batch = torch.zeros(5, dtype=torch.long)
         logits = head(h, batch, edge_index=None, edge_h=None, edge_attr=None)
@@ -59,7 +59,7 @@ class TestLogicalHead:
 
     def test_sum_pooling_gradient_flow(self) -> None:
         """Sum pooling guarantees every node receives gradient."""
-        head = LogicalHead(hidden_dim=16, dropout=0.0)
+        head = LogicalHead(hidden_dim=16, dropout=0.0, num_observables=1)
         h = torch.randn(8, 16, requires_grad=True)
         batch = torch.tensor([0] * 4 + [1] * 4)
         logits = head(h, batch)
@@ -79,6 +79,7 @@ class TestQECDecoder:
             hidden_dim=32,
             num_layers=2,
             dropout=0.0,
+            num_observables=1,
         )
         model.eval()
         with torch.no_grad():
@@ -92,6 +93,7 @@ class TestQECDecoder:
             hidden_dim=32,
             num_layers=2,
             dropout=0.0,
+            num_observables=1,
         )
         logits = model(batched)
         logits.sum().backward()

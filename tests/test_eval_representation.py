@@ -18,9 +18,9 @@ from decoders import GNNDecoder
 from evaluation.evaluator import EvalSet, load_eval_set
 from model.decoder import build_model
 from sampling.graph import CircuitMetadata, LogicalOperationLayout
+from sampling.profile import resolve_profile
 from sampling.representation import (
     PHASED,
-    SPATIAL_MEMORY,
     DataContract,
     LabelSpec,
 )
@@ -281,12 +281,19 @@ class TestGNNDecoderRepresentationValidation:
             num_detectors=n_det,
             dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
         )
-        model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
+        model = build_model(
+            hidden_dim=32,
+            num_layers=2,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
 
         decoder = GNNDecoder(
             model=model,
             metadata=metadata,
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
         )
         assert decoder.name == "gnn"
 
@@ -307,12 +314,19 @@ class TestGNNDecoderRepresentationValidation:
                 seam_mask=np.zeros(n_det, dtype=np.bool_),
             ),
         )
-        model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
+        model = build_model(
+            hidden_dim=32,
+            num_layers=2,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
 
         decoder = GNNDecoder(
             model=model,
             metadata=metadata,
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
         )
         assert decoder.name == "gnn"
 
@@ -337,7 +351,14 @@ class TestSpatialPathIdentity:
             dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
         )
 
-        model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
+        model = build_model(
+            hidden_dim=32,
+            num_layers=2,
+            dropout=0.0,
+            node_dim=6,
+            edge_dim=6,
+            num_observables=1,
+        )
         torch.manual_seed(0)
 
         decoder_old = GNNDecoder.from_metadata(
@@ -346,6 +367,7 @@ class TestSpatialPathIdentity:
             threshold=0.0,
             device=torch.device("cpu"),
             batch_size=64,
+            contract=resolve_profile("memory").data_contract,
         )
         result_old = decoder_old.decode_batch(es.syndromes[:20])
 
@@ -355,6 +377,7 @@ class TestSpatialPathIdentity:
             threshold=0.0,
             device=torch.device("cpu"),
             batch_size=64,
+            contract=resolve_profile("memory").data_contract,
         )
         result_new = decoder_new.decode_batch(es.syndromes[:20])
 

@@ -187,20 +187,25 @@ class TestDiscoveryCarriesTheKey:
         self, tmp_path: Path
     ) -> None:
         """One operation's root keeps its own circuits when another sits inside."""
-        _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
+        circuit_path = _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
+        write_circuit_manifest(
+            circuit_path,
+            ExperimentKey(operation="memory", distance=3, rounds=3, error_prob=0.01),
+            provenance={},
+        )
         _write_circuit(tmp_path / "zz_merge_split", "d3_r9_p0_005.stim", distance=3)
 
         points = settings_from_circuit_dir(tmp_path)
         assert len(points) == 1
         assert points[0].circuit_path.parent == tmp_path
 
-    def test_unmanifested_circuit_directory_resolves_to_memory(
-        self, tmp_path: Path
-    ) -> None:
-        """Circuits committed before manifests existed are memory circuits."""
-        _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
-        (point,) = settings_from_circuit_dir(tmp_path)
-        assert point.operation == "memory"
+    def test_unmanifested_circuit_is_rejected(self, tmp_path: Path) -> None:
+        """A circuit without a manifest has no identity to be assigned."""
+        circuit_path = _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)
+        with pytest.raises(
+            FileNotFoundError, match=circuit_manifest_path(circuit_path).name
+        ):
+            settings_from_circuit_dir(tmp_path)
 
     def test_manifest_without_operation_is_rejected(self, tmp_path: Path) -> None:
         circuit_path = _write_circuit(tmp_path, "d3_r3_p0_01.stim", distance=3)

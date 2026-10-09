@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import yaml
 
-from sampling.profile import resolve_profile
+from sampling.profile import require_operation, resolve_profile
 
 
 # Backends that can carry a training run. ``model.ops`` also exposes ``cuda``;
@@ -131,7 +131,7 @@ class TrainConfig:
         Attach physical error probability as a graph-level feature.
     """
 
-    operation: str = "memory"
+    operation: str
     circuit_dir: Path
     output_dir: Path = Path("outputs/runs")
     hidden_dim: int = 64
@@ -185,8 +185,9 @@ class TrainConfig:
     def from_fields(cls, fields: Mapping[str, Any]) -> TrainConfig:
         """Build a config from field values, resolving what they leave out.
 
-        ``circuit_dir`` falls back to the circuit root of the operation the
-        fields name, so callers apply every override before calling this.
+        ``operation`` is required.  ``circuit_dir`` falls back to the circuit
+        root of the operation the fields name, so callers apply every override
+        before calling this.
 
         Parameters
         ----------
@@ -196,14 +197,19 @@ class TrainConfig:
         Returns
         -------
         TrainConfig
+
+        Raises
+        ------
+        ValueError
+            If the fields name no registered operation.
         """
         values = dict(fields)
         for key in _TRAIN_PATH_FIELDS:
             if values.get(key) is not None:
                 values[key] = Path(values[key])
+        profile = require_operation(values)
         if values.get("circuit_dir") is None:
-            operation = values.get("operation", cls.operation)
-            values["circuit_dir"] = resolve_profile(operation).circuit_root
+            values["circuit_dir"] = profile.circuit_root
         return cls(**values)
 
     @classmethod

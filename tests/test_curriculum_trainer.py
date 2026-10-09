@@ -9,6 +9,8 @@ import pytest
 import stim
 import torch
 
+from sampling.experiment import ExperimentKey, write_circuit_manifest
+from sampling.graph import extract_circuit_metadata
 from sampling.sampler import WorkerSampler, settings_from_circuit_dir
 from training import CurriculumConfig, CurriculumStage, CurriculumTrainer, TrainConfig
 
@@ -24,6 +26,11 @@ def circuit_dir(tmp_path):
             after_clifford_depolarization=0.01,
         )
         circuit.to_file(tmp_path / f"d{d}_r{d}_p0_01.stim")
+        write_circuit_manifest(
+            tmp_path / f"d{d}_r{d}_p0_01.stim",
+            ExperimentKey(operation="memory", distance=d, rounds=d, error_prob=0.01),
+            provenance={},
+        )
     return tmp_path
 
 
@@ -38,11 +45,17 @@ def circuit_dir_3d(tmp_path):
             after_clifford_depolarization=0.01,
         )
         circuit.to_file(tmp_path / f"d{d}_r{d}_p0_01.stim")
+        write_circuit_manifest(
+            tmp_path / f"d{d}_r{d}_p0_01.stim",
+            ExperimentKey(operation="memory", distance=d, rounds=d, error_prob=0.01),
+            provenance={},
+        )
     return tmp_path
 
 
 def _make_train_config(circuit_dir, output_dir, **overrides):
     defaults = dict(
+        operation="memory",
         circuit_dir=circuit_dir,
         output_dir=output_dir,
         sample_budget=1000,
@@ -144,7 +157,9 @@ class TestCurriculumConfig:
 class TestWeightedSampling:
     def test_uniform_when_no_weights(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
-        sampler = WorkerSampler(settings, worker_seed=42)
+        sampler = WorkerSampler(
+            settings, worker_seed=42, metadata_extractor=extract_circuit_metadata
+        )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
             _, _, meta, _ = sampler.sample()
@@ -155,7 +170,12 @@ class TestWeightedSampling:
     def test_weights_skew_distribution(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
         weights = np.array([0.9 if s.distance == 3 else 0.1 for s in settings])
-        sampler = WorkerSampler(settings, worker_seed=42, weights=weights)
+        sampler = WorkerSampler(
+            settings,
+            worker_seed=42,
+            weights=weights,
+            metadata_extractor=extract_circuit_metadata,
+        )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
             _, _, meta, _ = sampler.sample()
@@ -165,12 +185,22 @@ class TestWeightedSampling:
     def test_weights_length_mismatch_rejected(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
         with pytest.raises(ValueError, match="weights length"):
-            WorkerSampler(settings, worker_seed=42, weights=np.array([0.5]))
+            WorkerSampler(
+                settings,
+                worker_seed=42,
+                weights=np.array([0.5]),
+                metadata_extractor=extract_circuit_metadata,
+            )
 
     def test_zero_weights_rejected(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
         with pytest.raises(ValueError, match="positive value"):
-            WorkerSampler(settings, worker_seed=42, weights=np.zeros(len(settings)))
+            WorkerSampler(
+                settings,
+                worker_seed=42,
+                weights=np.zeros(len(settings)),
+                metadata_extractor=extract_circuit_metadata,
+            )
 
 
 class TestCurriculumTrainerSmoke:

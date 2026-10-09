@@ -63,6 +63,10 @@ from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
 
 All artifacts are partitioned by operation at the root level.
 
+A circuit's identity `(operation, distance, rounds, error_prob)` is read from
+the manifest beside it and nowhere else: the filename carries none, and a
+circuit without a manifest is rejected by discovery.
+
 ### Circuits
 
 ```

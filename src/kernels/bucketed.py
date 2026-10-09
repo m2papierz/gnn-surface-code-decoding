@@ -40,15 +40,12 @@ import logging
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import torch
 
-from model.decoder import QECDecoder
-
-
-if TYPE_CHECKING:
-    from sampling.representation import DataContract
+from model.decoder import QECDecoder, require_model_contract
+from sampling.representation import SUPPORTED_FAST_PATH_VERSIONS, DataContract
 
 
 logger = logging.getLogger(__name__)
@@ -150,41 +147,39 @@ class BucketedGraphRunner:
     ----------
     model : QECDecoder
         Trained decoder in eval mode on a CUDA device.
+    contract : DataContract
+        Contract the model was trained under.  Its representation must be one
+        the CUDA fast path serves, and its widths the model's.
     batch_size : int
         Fixed shot count per call.
     node_buckets, edge_buckets : tuple of int
         Ascending capacity ladders.  A batch exceeding either top rung raises
         rather than triggering a fresh capture.
-    node_dim, edge_dim : int
-        Feature dimensions (spatial defaults: 6, 6).
-    contract : DataContract, optional
-        If provided, validates that the representation version is
-        supported by the CUDA fast path and extracts dimensions from it.
+
+    Raises
+    ------
+    ValueError
+        If the representation is not served by the fast path, the model's
+        widths are not the contract's, ``batch_size`` is below 1, or the model
+        is not on a CUDA device.
     """
 
     def __init__(
         self,
         model: QECDecoder,
         *,
+        contract: DataContract,
         batch_size: int,
         node_buckets: tuple[int, ...] = DEFAULT_NODE_BUCKETS,
         edge_buckets: tuple[int, ...] = DEFAULT_EDGE_BUCKETS,
-        node_dim: int = 6,
-        edge_dim: int = 6,
-        contract: DataContract | None = None,
     ) -> None:
-        if contract is not None:
-            from sampling.representation import SUPPORTED_FAST_PATH_VERSIONS
-
-            if contract.version not in SUPPORTED_FAST_PATH_VERSIONS:
-                raise ValueError(
-                    f"Representation {contract.version!r} is not supported by "
-                    f"the CUDA fast path. Supported: "
-                    f"{sorted(SUPPORTED_FAST_PATH_VERSIONS)}"
-                )
-            node_dim = contract.node_dim
-            edge_dim = contract.edge_dim
-
+        if contract.version not in SUPPORTED_FAST_PATH_VERSIONS:
+            raise ValueError(
+                f"Representation {contract.version!r} is not supported by "
+                f"the CUDA fast path. Supported: "
+                f"{sorted(SUPPORTED_FAST_PATH_VERSIONS)}"
+            )
+        require_model_contract(model, contract)
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         if not next(model.parameters()).is_cuda:
@@ -194,8 +189,8 @@ class BucketedGraphRunner:
         self.batch_size = batch_size
         self.node_buckets = tuple(sorted(node_buckets))
         self.edge_buckets = tuple(sorted(edge_buckets))
-        self.node_dim = node_dim
-        self.edge_dim = edge_dim
+        self.node_dim = contract.node_dim
+        self.edge_dim = contract.edge_dim
         self.device = next(model.parameters()).device
 
         # Logits per graph, read from the head rather than assumed, so the

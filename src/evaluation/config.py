@@ -9,7 +9,7 @@ from typing import Any, Final
 
 import yaml
 
-from sampling.profile import resolve_profile
+from sampling.profile import require_operation, resolve_profile
 
 
 # YAML keys read into EvalConfig fields.
@@ -66,7 +66,7 @@ class EvalConfig:
         Stim sampler seed for sanity evaluation.
     """
 
-    operation: str = "memory"
+    operation: str
     checkpoint: Path | None = None
     eval_root: Path = Path("data/eval")
     circuit_dir: Path
@@ -102,8 +102,9 @@ class EvalConfig:
     def from_fields(cls, fields: Mapping[str, Any]) -> EvalConfig:
         """Build a config from field values, resolving what they leave out.
 
-        ``circuit_dir`` falls back to the circuit root of the operation the
-        fields name, so callers apply every override before calling this.
+        ``operation`` is required.  ``circuit_dir`` falls back to the circuit
+        root of the operation the fields name, so callers apply every override
+        before calling this.
 
         Parameters
         ----------
@@ -113,14 +114,19 @@ class EvalConfig:
         Returns
         -------
         EvalConfig
+
+        Raises
+        ------
+        ValueError
+            If the fields name no registered operation.
         """
         values = dict(fields)
         for key in _EVAL_PATH_FIELDS:
             if values.get(key) is not None:
                 values[key] = Path(values[key])
+        profile = require_operation(values)
         if values.get("circuit_dir") is None:
-            operation = values.get("operation", cls.operation)
-            values["circuit_dir"] = resolve_profile(operation).circuit_root
+            values["circuit_dir"] = profile.circuit_root
         return cls(**values)
 
     @classmethod

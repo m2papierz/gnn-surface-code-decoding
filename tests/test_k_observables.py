@@ -18,9 +18,9 @@ from torch_geometric.data import Batch, Data
 from decoders import GNNDecoder
 from model.decoder import build_model
 from sampling.graph import CircuitMetadata
+from sampling.profile import resolve_profile
 from sampling.representation import (
     SPATIAL,
-    SPATIAL_MEMORY,
     DataContract,
     LabelSpec,
 )
@@ -92,6 +92,7 @@ def _make_training_state(
         num_layers=2,
         dropout=0.0,
         num_workers=0,
+        operation="memory",
     )
     return build_training_state(
         cfg, contract=contract, total_budget=1000, device=device
@@ -103,11 +104,18 @@ class TestDecodeBatchAllocation:
 
     def test_k1_shape(self) -> None:
         meta = _make_metadata()
-        model = build_model(hidden_dim=16, num_layers=2, dropout=0.0, num_observables=1)
+        model = build_model(
+            hidden_dim=16,
+            num_layers=2,
+            dropout=0.0,
+            num_observables=1,
+            node_dim=6,
+            edge_dim=6,
+        )
         decoder = GNNDecoder.from_metadata(
             model=model,
             metadata=meta,
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
             device=torch.device("cpu"),
         )
         syndromes = np.zeros((10, 24), dtype=np.uint8)
@@ -116,7 +124,14 @@ class TestDecodeBatchAllocation:
 
     def test_k2_shape(self) -> None:
         meta = _make_metadata()
-        model = build_model(hidden_dim=16, num_layers=2, dropout=0.0, num_observables=2)
+        model = build_model(
+            hidden_dim=16,
+            num_layers=2,
+            dropout=0.0,
+            num_observables=2,
+            node_dim=6,
+            edge_dim=6,
+        )
         decoder = GNNDecoder.from_metadata(
             model=model,
             metadata=meta,
@@ -129,7 +144,14 @@ class TestDecodeBatchAllocation:
 
     def test_k2_nonempty_syndromes(self) -> None:
         meta = _make_metadata()
-        model = build_model(hidden_dim=16, num_layers=2, dropout=0.0, num_observables=2)
+        model = build_model(
+            hidden_dim=16,
+            num_layers=2,
+            dropout=0.0,
+            num_observables=2,
+            node_dim=6,
+            edge_dim=6,
+        )
         decoder = GNNDecoder.from_metadata(
             model=model,
             metadata=meta,
@@ -149,7 +171,7 @@ class TestCheckpointKValidation:
     """load_checkpoint rejects mismatched num_observables."""
 
     def test_mismatched_num_observables_raises(self, tmp_path) -> None:
-        state_k1 = _make_training_state(SPATIAL_MEMORY)
+        state_k1 = _make_training_state(resolve_profile("memory").data_contract)
         ckpt_path = tmp_path / "ckpt_k1.pt"
         write_checkpoint(
             ckpt_path,
@@ -157,7 +179,7 @@ class TestCheckpointKValidation:
             samples_consumed=100,
             best_metric=0.5,
             decision_threshold=0.0,
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
             cfg=state_k1._cfg if hasattr(state_k1, "_cfg") else _default_cfg(),
         )
 
@@ -171,7 +193,7 @@ class TestCheckpointKValidation:
             )
 
     def test_matching_num_observables_passes(self, tmp_path) -> None:
-        state = _make_training_state(SPATIAL_MEMORY)
+        state = _make_training_state(resolve_profile("memory").data_contract)
         ckpt_path = tmp_path / "ckpt.pt"
         write_checkpoint(
             ckpt_path,
@@ -179,14 +201,14 @@ class TestCheckpointKValidation:
             samples_consumed=100,
             best_metric=0.5,
             decision_threshold=0.0,
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
             cfg=_default_cfg(),
         )
         ckpt = load_checkpoint(
             ckpt_path,
             state,
             _default_cfg(),
-            contract=SPATIAL_MEMORY,
+            contract=resolve_profile("memory").data_contract,
         )
         assert ckpt["samples_consumed"] == 100
 
@@ -204,6 +226,7 @@ def _default_cfg():
         num_layers=2,
         dropout=0.0,
         num_workers=0,
+        operation="memory",
     )
 
 
@@ -253,7 +276,7 @@ class TestSweepThresholdK:
         assert isinstance(thr, float)
 
     def test_k1_returns_scalar(self) -> None:
-        state = _make_training_state(SPATIAL_MEMORY)
+        state = _make_training_state(resolve_profile("memory").data_contract)
         batches = [_make_batch(8, num_observables=1)]
         thr = sweep_threshold(state, batches)
         assert isinstance(thr, float)
@@ -271,7 +294,7 @@ class TestValMetricsK:
         assert 0.0 <= metrics["ler"] <= 1.0
 
     def test_k1_metrics(self) -> None:
-        state = _make_training_state(SPATIAL_MEMORY)
+        state = _make_training_state(resolve_profile("memory").data_contract)
         batches = [_make_batch(8, num_observables=1)]
         metrics = compute_val_metrics(state, batches)
         assert "loss" in metrics

@@ -18,7 +18,7 @@ from torch_geometric.nn import global_add_pool, global_max_pool
 from torch_geometric.utils import softmax
 
 from model.encoder import DetectorGraphEncoder
-from sampling.representation import SPATIAL
+from sampling.representation import DataContract
 
 
 class BatchedGraph(Protocol):
@@ -79,15 +79,16 @@ class LogicalHead(nn.Module):
     hidden_dim : int
         Dimensionality of encoder output embeddings.
     num_observables : int
-        Number of logical observables to predict (default: 1).
+        Number of logical observables to predict, the contract's.
     dropout : float
         Dropout probability in the MLP (default: 0.1).
     """
 
     def __init__(
         self,
+        *,
         hidden_dim: int,
-        num_observables: int = 1,
+        num_observables: int,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -178,11 +179,11 @@ class QECDecoder(nn.Module):
 
 def build_model(
     *,
-    node_dim: int = SPATIAL.node_dim,
-    edge_dim: int = SPATIAL.edge_dim,
-    hidden_dim: int = 128,
-    num_layers: int = 6,
-    num_observables: int = 1,
+    node_dim: int,
+    edge_dim: int,
+    hidden_dim: int,
+    num_layers: int,
+    num_observables: int,
     dropout: float = 0.1,
 ) -> QECDecoder:
     """
@@ -190,14 +191,12 @@ def build_model(
 
     Parameters
     ----------
-    node_dim : int
-        Input node feature dimensionality (default: 6).
-    edge_dim : int
-        Input edge feature dimensionality (default: 6).
+    node_dim, edge_dim : int
+        Input feature dimensionalities, the data contract's.
     hidden_dim, num_layers, dropout
         Encoder architecture parameters.
     num_observables : int
-        Number of logical observables.
+        Number of logical observables, the data contract's.
 
     Returns
     -------
@@ -218,3 +217,32 @@ def build_model(
     )
 
     return QECDecoder(encoder, head)
+
+
+def require_model_contract(model: QECDecoder, contract: DataContract) -> None:
+    """Reject a model whose input or output width is not the contract's.
+
+    Parameters
+    ----------
+    model : QECDecoder
+        Model about to receive graphs built under *contract*.
+    contract : DataContract
+        Contract the graphs are built under.
+
+    Raises
+    ------
+    ValueError
+        Naming the model's and the contract's ``(node_dim, edge_dim,
+        num_observables)``.
+    """
+    model_dims = (
+        model.encoder.node_dim,
+        model.encoder.edge_dim,
+        model.head.num_observables,
+    )
+    contract_dims = (contract.node_dim, contract.edge_dim, contract.num_observables)
+    if model_dims != contract_dims:
+        raise ValueError(
+            f"Model (node_dim, edge_dim, num_observables)={model_dims} does not "
+            f"match contract {contract.version!r} {contract_dims}"
+        )

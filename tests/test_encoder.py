@@ -47,7 +47,7 @@ class TestOutputShapes:
         assert edge_h.shape == (8, 32)
 
     def test_hidden_dim_propagates(self) -> None:
-        enc = DetectorGraphEncoder(hidden_dim=64, num_layers=2)
+        enc = DetectorGraphEncoder(hidden_dim=64, num_layers=2, node_dim=6, edge_dim=6)
         x = torch.randn(10, NODE_DIM)
         ei = torch.randint(0, 10, (2, 20))
         ea = torch.randn(20, EDGE_DIM)
@@ -99,7 +99,7 @@ class TestConfiguration:
     """Verify constructor validation and edge cases."""
 
     def test_single_layer(self) -> None:
-        enc = DetectorGraphEncoder(num_layers=1, hidden_dim=16)
+        enc = DetectorGraphEncoder(num_layers=1, hidden_dim=16, node_dim=6, edge_dim=6)
         x = torch.randn(4, NODE_DIM)
         ei = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
         ea = torch.randn(3, EDGE_DIM)
@@ -123,11 +123,11 @@ class TestConfiguration:
 
     def test_invalid_num_layers(self) -> None:
         with pytest.raises(ValueError, match="num_layers"):
-            DetectorGraphEncoder(num_layers=0)
+            DetectorGraphEncoder(num_layers=0, node_dim=6, edge_dim=6, hidden_dim=128)
 
     def test_invalid_hidden_dim(self) -> None:
         with pytest.raises(ValueError, match="hidden_dim"):
-            DetectorGraphEncoder(hidden_dim=0)
+            DetectorGraphEncoder(hidden_dim=0, node_dim=6, edge_dim=6, num_layers=6)
 
 
 class TestDeterminism:

@@ -9,6 +9,7 @@ import pytest
 import stim
 import torch
 
+from sampling.experiment import ExperimentKey, write_circuit_manifest
 from training import TrainConfig, Trainer
 
 
@@ -25,11 +26,17 @@ def circuit_dir(tmp_path):
         after_clifford_depolarization=0.01,
     )
     circuit.to_file(tmp_path / "d3_r3_p0_01.stim")
+    write_circuit_manifest(
+        tmp_path / "d3_r3_p0_01.stim",
+        ExperimentKey(operation="memory", distance=3, rounds=3, error_prob=0.01),
+        provenance={},
+    )
     return tmp_path
 
 
 def _make_config(circuit_dir, output_dir, **overrides):
     defaults = dict(
+        operation="memory",
         circuit_dir=circuit_dir,
         output_dir=output_dir,
         sample_budget=1000,
@@ -149,21 +156,29 @@ class TestConfigValidation:
 
     def test_sample_budget_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="sample_budget"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, sample_budget=0)
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, sample_budget=0, operation="memory"
+            )
 
     def test_val_interval_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="val_interval_samples"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, val_interval_samples=0)
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, val_interval_samples=0, operation="memory"
+            )
 
     def test_val_size_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="val_size"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, val_size=0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, val_size=0, operation="memory")
 
     def test_warmup_fraction_bounds(self) -> None:
         with pytest.raises(ValueError, match="warmup_fraction"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, warmup_fraction=0.0)
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, warmup_fraction=0.0, operation="memory"
+            )
         with pytest.raises(ValueError, match="warmup_fraction"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, warmup_fraction=1.0)
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, warmup_fraction=1.0, operation="memory"
+            )
 
     def test_cuda_backend_is_rejected(self) -> None:
         """The fast-path kernels are forward-only; training on them cannot work.
@@ -173,26 +188,32 @@ class TestConfigValidation:
         inference-only kernels into the training loop.
         """
         with pytest.raises(ValueError, match="inference-only"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="cuda")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="cuda", operation="memory")
 
     def test_unknown_backend_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="backend must be one of"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="tensorrt")
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, backend="tensorrt", operation="memory"
+            )
 
     def test_training_backends_are_accepted(self) -> None:
         assert (
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="pytorch").backend
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, backend="pytorch", operation="memory"
+            ).backend
             == "pytorch"
         )
         assert (
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="compiled").backend
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, backend="compiled", operation="memory"
+            ).backend
             == "compiled"
         )
 
     def test_cuda_backend_is_rejected_from_yaml(self, tmp_path) -> None:
         """YAML is the path the CLI's own `choices` guard does not cover."""
         yaml_path = tmp_path / "train.yaml"
-        yaml_path.write_text('backend: "cuda"\n', encoding="utf-8")
+        yaml_path.write_text('operation: "memory"\nbackend: "cuda"\n', encoding="utf-8")
 
         with pytest.raises(ValueError, match="inference-only"):
             TrainConfig.from_yaml(yaml_path)
@@ -200,28 +221,32 @@ class TestConfigValidation:
     def test_misspelled_amp_dtype_is_rejected(self) -> None:
         """A typo used to resolve to bfloat16 while the log echoed the typo."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="bflaot16")
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="bflaot16", operation="memory"
+            )
 
     def test_torch_attribute_that_is_not_a_dtype_is_rejected(self) -> None:
         """getattr(torch, "nn") returns a module, which autocast cannot use."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="nn")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="nn", operation="memory")
 
     def test_real_dtype_outside_the_amp_set_is_rejected(self) -> None:
         """float64 is a genuine dtype, and meaningless for autocast."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="float64")
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="float64", operation="memory"
+            )
 
     def test_amp_dtype_resolves_to_the_torch_dtype(self) -> None:
         assert (
             TrainConfig(
-                circuit_dir=MEMORY_CIRCUITS, amp_dtype="bfloat16"
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="bfloat16", operation="memory"
             ).amp_torch_dtype
             is torch.bfloat16
         )
         assert (
             TrainConfig(
-                circuit_dir=MEMORY_CIRCUITS, amp_dtype="float16"
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="float16", operation="memory"
             ).amp_torch_dtype
             is torch.float16
         )
@@ -234,9 +259,9 @@ class TestOperationConfig:
         with pytest.raises(ValueError, match="Unknown operation"):
             TrainConfig(operation="nonexistent_op", circuit_dir=".")
 
-    def test_default_operation_is_memory(self) -> None:
-        cfg = TrainConfig(circuit_dir=MEMORY_CIRCUITS)
-        assert cfg.operation == "memory"
+    def test_omitted_operation_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no operation"):
+            TrainConfig.from_fields({"circuit_dir": MEMORY_CIRCUITS})
 
     def test_circuit_dir_populated_from_profile(self) -> None:
         cfg = TrainConfig.from_fields({"operation": "memory"})
@@ -293,6 +318,7 @@ class TestFromYaml:
 
     def test_loads_sample_budget_config(self, tmp_path) -> None:
         yaml_content = """\
+operation: "memory"
 circuit_dir: "./data/circuits/memory"
 output_dir: "./outputs"
 model:

@@ -13,23 +13,31 @@ Representation versions are named by what they capture, not by ordinal:
 
 - ``"spatial"`` - fired detectors with static spatial features
   (position, boundary distance, measurement basis).
-- ``"phased"`` (planned) - spatial core plus phase-window one-hot,
-  patch identity, and dynamic boundary distances at the seam.
+- ``"phased"`` - spatial core plus phase-window one-hot, patch identity,
+  and dynamic boundary distances at the seam.
+
+A label spec belongs to an operation, not to a representation, so this module
+holds no contract: an operation's contract is its profile's ``data_contract``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any, Final
 
 import numpy as np
 
+from sampling.graph import (
+    CircuitMetadata,
+    FiredDetectorGraph,
+    build_fired_detector_graph,
+    build_phased_detector_graph,
+)
 
-if TYPE_CHECKING:
-    from sampling.graph import CircuitMetadata, FiredDetectorGraph
 
-type GraphBuilder = Callable[[np.ndarray, "CircuitMetadata"], "FiredDetectorGraph"]
+type GraphBuilder = Callable[[np.ndarray, CircuitMetadata], FiredDetectorGraph]
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +189,6 @@ class DataContract:
         return cls.from_dict(cfg["contract"])
 
 
-# spatial representation (the current and only representation) --------
-
 SPATIAL = RepresentationDescriptor(
     version="spatial",
     node_dim=6,
@@ -190,15 +196,6 @@ SPATIAL = RepresentationDescriptor(
     node_features=("x_norm", "y_norm", "t_norm", "d_x", "d_y", "basis"),
     edge_features=("dx", "dy", "dt", "euclidean", "chebyshev", "dem_weight"),
 )
-
-MEMORY_LABELS = LabelSpec(
-    num_observables=1,
-    observable_names=("logical_observable",),
-)
-
-SPATIAL_MEMORY = DataContract(representation=SPATIAL, labels=MEMORY_LABELS)
-
-# phased representation ----------------------------------------------
 
 PHASED = RepresentationDescriptor(
     version="phased",
@@ -221,9 +218,10 @@ PHASED = RepresentationDescriptor(
 )
 
 
-_BUILDER_REGISTRY: dict[
-    str, Callable[[np.ndarray, "CircuitMetadata"], "FiredDetectorGraph"]
-] = {}
+_BUILDER_REGISTRY: Final[dict[str, GraphBuilder]] = {
+    "spatial": build_fired_detector_graph,
+    "phased": build_phased_detector_graph,
+}
 
 _DESCRIPTOR_REGISTRY: dict[str, RepresentationDescriptor] = {
     "spatial": SPATIAL,
@@ -232,15 +230,8 @@ _DESCRIPTOR_REGISTRY: dict[str, RepresentationDescriptor] = {
 
 SUPPORTED_FAST_PATH_VERSIONS: frozenset[str] = frozenset({"spatial"})
 
-
-def _register_builders() -> None:
-    """Lazily populate the builder registry to avoid circular imports."""
-    if _BUILDER_REGISTRY:
-        return
-    from sampling.graph import build_fired_detector_graph, build_phased_detector_graph
-
-    _BUILDER_REGISTRY["spatial"] = build_fired_detector_graph
-    _BUILDER_REGISTRY["phased"] = build_phased_detector_graph
+# Versions whose builder reads the circuit's logical-operation layout.
+_LAYOUT_VERSIONS: Final[frozenset[str]] = frozenset({"phased"})
 
 
 def registered_representations() -> tuple[RepresentationDescriptor, ...]:
@@ -294,7 +285,6 @@ def resolve_builder(version: str) -> GraphBuilder:
     ValueError
         If *version* is not registered.
     """
-    _register_builders()
     builder = _BUILDER_REGISTRY.get(version)
     if builder is None:
         raise ValueError(
@@ -304,6 +294,65 @@ def resolve_builder(version: str) -> GraphBuilder:
     return builder
 
 
+def requires_layout(version: str) -> bool:
+    """Whether the builder of a representation reads a logical-operation layout.
+
+    Parameters
+    ----------
+    version : str
+        Representation version tag (e.g. ``"phased"``).
+
+    Returns
+    -------
+    bool
+
+    Raises
+    ------
+    ValueError
+        If *version* is not registered.
+    """
+    return resolve_descriptor(version).version in _LAYOUT_VERSIONS
+
+
+# What a contract fixes, each axis named the way a mismatch on it is reported.
+_CONTRACT_AXES: Final[tuple[tuple[str, Callable[[DataContract], object]], ...]] = (
+    ("Representation", lambda contract: contract.version),
+    ("Node feature", lambda contract: contract.representation.node_features),
+    ("Edge feature", lambda contract: contract.representation.edge_features),
+    ("Observable count", lambda contract: contract.num_observables),
+    ("Observable name", lambda contract: contract.labels.observable_names),
+)
+
+
+def require_contract(
+    expected: DataContract, found: DataContract, *, source: str | Path
+) -> None:
+    """Reject a contract read from an artifact unless it is the expected one.
+
+    Parameters
+    ----------
+    expected : DataContract
+        Contract the consumer runs under.
+    found : DataContract
+        Contract the artifact declares.
+    source : str or Path
+        The artifact *found* was read from, for the error message.
+
+    Raises
+    ------
+    ValueError
+        Naming every axis on which the two contracts differ.
+    """
+    mismatches = [
+        f"{axis} mismatch: {source} declares {read(found)!r}, "
+        f"expected {read(expected)!r}"
+        for axis, read in _CONTRACT_AXES
+        if read(found) != read(expected)
+    ]
+    if mismatches:
+        raise ValueError("; ".join(mismatches))
+
+
 __all__ = [
     "DataContract",
     "LabelSpec",
@@ -311,8 +360,9 @@ __all__ = [
     "RepresentationDescriptor",
     "SUPPORTED_FAST_PATH_VERSIONS",
     "SPATIAL",
-    "SPATIAL_MEMORY",
     "registered_representations",
+    "require_contract",
+    "requires_layout",
     "resolve_builder",
     "resolve_descriptor",
 ]
