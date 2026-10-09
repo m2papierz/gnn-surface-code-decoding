@@ -421,10 +421,14 @@ class TestWorkerSampler:
         """Same seed produces identical sample sequences."""
         settings = _d3_settings()
         s1 = WorkerSampler(
-            settings, worker_seed=12345, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=12345,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         s2 = WorkerSampler(
-            settings, worker_seed=12345, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=12345,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
 
         for _ in range(20):
@@ -439,10 +443,14 @@ class TestWorkerSampler:
         """Different seeds produce different sequences."""
         settings = _d3_settings()
         s1 = WorkerSampler(
-            settings, worker_seed=111, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=111,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         s2 = WorkerSampler(
-            settings, worker_seed=222, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=222,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
 
         syndromes_1 = [s1.sample()[0].tobytes() for _ in range(50)]
@@ -453,7 +461,9 @@ class TestWorkerSampler:
     def test_output_shapes(self) -> None:
         settings = _d3_settings()
         sampler = WorkerSampler(
-            settings, worker_seed=42, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=42,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         syn, obs, meta, p = sampler.sample()
 
@@ -468,7 +478,9 @@ class TestWorkerSampler:
         """All settings sampled roughly equally over many shots."""
         settings = _d3_settings()
         sampler = WorkerSampler(
-            settings, worker_seed=99, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=99,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
 
         p_counts: dict[float, int] = {}
@@ -484,7 +496,9 @@ class TestWorkerSampler:
     def test_empty_settings_raises(self) -> None:
         with pytest.raises(ValueError, match="At least one"):
             WorkerSampler(
-                [], worker_seed=42, metadata_extractor=extract_circuit_metadata
+                [],
+                worker_seed=42,
+                metadata_extractor=resolve_profile("memory").metadata_extractor,
             )
 
 
@@ -641,21 +655,16 @@ class TestCustomMetadataExtractor:
     def test_worker_sampler_calls_custom_extractor(self) -> None:
         """WorkerSampler invokes the supplied extractor for every setting."""
         settings = _d3_settings()
-        call_log: list[tuple[int, int]] = []
+        call_log: list[Path] = []
 
-        def tracking_extractor(
-            circuit: stim.Circuit, distance: int, rounds: int
-        ) -> CircuitMetadata:
-            call_log.append((distance, rounds))
-            return extract_circuit_metadata(circuit, distance, rounds)
+        def tracking_extractor(circuit_path: Path) -> CircuitMetadata:
+            call_log.append(circuit_path)
+            return resolve_profile("memory").metadata_extractor(circuit_path)
 
         sampler = WorkerSampler(
             settings, worker_seed=42, metadata_extractor=tracking_extractor
         )
-        assert len(call_log) == len(settings)
-        for (d, r), s in zip(call_log, settings, strict=True):
-            assert d == s.distance
-            assert r == s.rounds
+        assert call_log == [s.circuit_path for s in settings]
 
         syn, obs, meta, p = sampler.sample()
         assert isinstance(meta, CircuitMetadata)
@@ -671,11 +680,9 @@ class TestCustomMetadataExtractor:
         settings = _d3_settings()
         calls: list[int] = []
 
-        def counting_extractor(
-            circuit: stim.Circuit, distance: int, rounds: int
-        ) -> CircuitMetadata:
+        def counting_extractor(circuit_path: Path) -> CircuitMetadata:
             calls.append(1)
-            return extract_circuit_metadata(circuit, distance, rounds)
+            return resolve_profile("memory").metadata_extractor(circuit_path)
 
         ds = StreamingSurfaceCodeDataset(
             settings=settings,

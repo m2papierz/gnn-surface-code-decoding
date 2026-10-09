@@ -29,6 +29,7 @@ __all__ = [
     "circuit_key",
     "circuit_manifest_path",
     "eval_set_operation",
+    "manifest_key",
     "read_circuit_manifest",
     "validate_operation_name",
     "write_circuit_manifest",
@@ -159,8 +160,11 @@ def read_circuit_manifest(circuit_path: Path) -> dict[str, Any]:
     return manifest
 
 
-def _key_from_manifest(manifest: Mapping[str, Any], source: Path) -> ExperimentKey:
+def manifest_key(manifest: Mapping[str, Any], source: Path) -> ExperimentKey:
     """Read the experiment key a manifest declares.
+
+    For a caller that needs the manifest's other fields too, so that it is
+    read once; ``circuit_key`` is the path-only form.
 
     Parameters
     ----------
@@ -215,7 +219,7 @@ def circuit_key(circuit_path: Path) -> ExperimentKey:
         If the manifest is unreadable or declares an invalid key.
     """
     manifest = read_circuit_manifest(circuit_path)
-    return _key_from_manifest(manifest, circuit_manifest_path(circuit_path))
+    return manifest_key(manifest, circuit_manifest_path(circuit_path))
 
 
 def eval_set_operation(manifest: Mapping[str, Any], circuit_file: str | Path) -> str:

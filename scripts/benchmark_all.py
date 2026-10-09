@@ -48,7 +48,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -60,13 +59,14 @@ from torch_geometric.data import Batch, Data
 
 from model.decoder import QECDecoder, build_model, collate_graphs
 from model.ops import set_backend
-from sampling.graph import CircuitMetadata
+from sampling.graph import CircuitMetadata, MetadataExtractor
 from sampling.profile import resolve_profile
 from sampling.representation import (
     SUPPORTED_FAST_PATH_VERSIONS,
     DataContract,
     resolve_builder,
 )
+from sampling.sampler import settings_from_circuit_dir
 
 
 logger = logging.getLogger(__name__)
@@ -75,41 +75,31 @@ DEFAULT_N_ITERS = 200
 WARMUP_ITERS = 30
 
 
-def _find_circuit(
-    circuit_root: Path, distance: int, error_prob: str
-) -> tuple[Path, int]:
-    """Find a circuit file and extract its round count.
-
-    Returns
-    -------
-    tuple of (Path, int)
-        Circuit file path and number of rounds.
+def _load(
+    circuit_root: Path,
+    metadata_extractor: MetadataExtractor,
+    distance: int,
+    error_prob: float,
+) -> tuple[Path, stim.Circuit, CircuitMetadata]:
+    """Resolve the one committed circuit at ``(distance, error_prob)`` and read it.
 
     Raises
     ------
-    FileNotFoundError
-        If no matching circuit is found.
+    ValueError
+        If the root holds no circuit at that point, or more than one (at
+        different rounds).
     """
-    pattern = re.compile(rf"d{distance}_r(\d+)_p{re.escape(error_prob)}\.stim$")
-    for f in sorted(circuit_root.iterdir()):
-        m = pattern.match(f.name)
-        if m:
-            return f, int(m.group(1))
-    raise FileNotFoundError(
-        f"No circuit for d={distance}, p={error_prob} in {circuit_root}"
+    points = settings_from_circuit_dir(
+        circuit_root, distances=[distance], error_probs=[error_prob]
     )
-
-
-def _load(
-    profile_circuit_root: Path,
-    metadata_extractor: Callable,
-    distance: int,
-    error_prob: str,
-) -> tuple[Path, stim.Circuit, CircuitMetadata]:
-    path, rounds = _find_circuit(profile_circuit_root, distance, error_prob)
-    circuit = stim.Circuit.from_file(str(path))
-    metadata = metadata_extractor(circuit, distance, rounds)
-    return path, circuit, metadata
+    if len(points) != 1:
+        raise ValueError(
+            f"{circuit_root} holds {len(points)} circuits at d={distance}, "
+            f"p={error_prob}: {[str(point.circuit_path) for point in points]}"
+        )
+    (point,) = points
+    circuit = stim.Circuit.from_file(str(point.circuit_path))
+    return point.circuit_path, circuit, metadata_extractor(point.circuit_path)
 
 
 def _percentiles(timings_ms: Sequence[float]) -> dict[str, float]:
@@ -322,7 +312,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Operation to benchmark (e.g. memory, zz_merge_split).",
     )
     parser.add_argument("--distance", type=int, default=7, choices=[3, 5, 7])
-    parser.add_argument("--error-prob", default="0_01")
+    parser.add_argument("--error-prob", type=float, default=0.01)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=6)
@@ -370,7 +360,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.operation,
         representation,
         args.distance,
-        args.error_prob.replace("_", "."),
+        args.error_prob,
         metadata.num_detectors,
         args.batch_size,
     )
@@ -508,7 +498,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "representation": representation,
             "gpu": torch.cuda.get_device_name(0),
             "distance": args.distance,
-            "error_prob": args.error_prob.replace("_", "."),
+            "error_prob": args.error_prob,
             "batch_size": args.batch_size,
             "hidden_dim": args.hidden_dim,
             "num_layers": args.num_layers,

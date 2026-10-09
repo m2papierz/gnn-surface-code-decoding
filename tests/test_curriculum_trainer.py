@@ -10,7 +10,7 @@ import stim
 import torch
 
 from sampling.experiment import ExperimentKey, write_circuit_manifest
-from sampling.graph import extract_circuit_metadata
+from sampling.profile import resolve_profile
 from sampling.sampler import WorkerSampler, settings_from_circuit_dir
 from training import CurriculumConfig, CurriculumStage, CurriculumTrainer, TrainConfig
 
@@ -158,7 +158,9 @@ class TestWeightedSampling:
     def test_uniform_when_no_weights(self, circuit_dir) -> None:
         settings = settings_from_circuit_dir(circuit_dir)
         sampler = WorkerSampler(
-            settings, worker_seed=42, metadata_extractor=extract_circuit_metadata
+            settings,
+            worker_seed=42,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
@@ -174,7 +176,7 @@ class TestWeightedSampling:
             settings,
             worker_seed=42,
             weights=weights,
-            metadata_extractor=extract_circuit_metadata,
+            metadata_extractor=resolve_profile("memory").metadata_extractor,
         )
         counts = {s.distance: 0 for s in settings}
         for _ in range(1000):
@@ -189,7 +191,7 @@ class TestWeightedSampling:
                 settings,
                 worker_seed=42,
                 weights=np.array([0.5]),
-                metadata_extractor=extract_circuit_metadata,
+                metadata_extractor=resolve_profile("memory").metadata_extractor,
             )
 
     def test_zero_weights_rejected(self, circuit_dir) -> None:
@@ -199,7 +201,7 @@ class TestWeightedSampling:
                 settings,
                 worker_seed=42,
                 weights=np.zeros(len(settings)),
-                metadata_extractor=extract_circuit_metadata,
+                metadata_extractor=resolve_profile("memory").metadata_extractor,
             )
 
 

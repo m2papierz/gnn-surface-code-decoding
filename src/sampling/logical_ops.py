@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final
@@ -23,22 +22,15 @@ from tqec import compile_block_graph as _tqec_compile
 from tqec.utils.noise_model import NoiseRule
 from tqec.utils.scale import LinearFunction
 
+from sampling.circuit_metadata import PhaseWindow, build_layout
 from sampling.dem import error_instructions
 from sampling.experiment import ExperimentKey, write_circuit_manifest
-from sampling.graph import (
-    CircuitMetadata,
-    LogicalOperationLayout,
-    extract_circuit_metadata,
-)
 
 
 __all__ = [
     "CircuitValidationError",
-    "LogicalOperationMetadata",
-    "PhaseWindow",
     "compile_block_graph_circuit",
     "derive_circuit_metadata",
-    "extract_logical_op_circuit_metadata",
     "generate_and_write_circuit",
     "validate_logical_op_circuit",
 ]
@@ -57,259 +49,6 @@ _MIN_COORD_DIMS: Final[int] = 3
 
 class CircuitValidationError(Exception):
     """A logical-operation circuit failed the validation gate."""
-
-
-@dataclass(frozen=True, slots=True)
-class PhaseWindow:
-    """A named contiguous window over detector time.
-
-    Parameters
-    ----------
-    name : str
-        Phase label (``"memory"``, ``"merge"``).
-    t_start : float
-        Inclusive lower bound.
-    t_end : float
-        Exclusive upper bound.
-    """
-
-    name: str
-    t_start: float
-    t_end: float
-
-    def __post_init__(self) -> None:
-        if self.t_end <= self.t_start:
-            raise ValueError(
-                f"PhaseWindow {self.name!r}: t_end ({self.t_end}) must be > "
-                f"t_start ({self.t_start})"
-            )
-
-    def contains_time(self, t: float) -> bool:
-        """Return whether *t* falls inside the window."""
-        return self.t_start <= t < self.t_end
-
-
-@dataclass(frozen=True, slots=True)
-class LogicalOperationMetadata:
-    """Typed metadata record for a logical-operation circuit.
-
-    Carries the phase/patch axis and the observable set, owned by the
-    circuit source and consumed by the graph builder.  Derived once at
-    extraction time and never re-derived inside a worker.
-
-    Parameters
-    ----------
-    phase_windows : tuple of PhaseWindow
-        Contiguous, ordered windows over detector time.
-    seam_detector_indices : tuple of int
-        Detector indices on the merge boundary (sorted).
-    patch_ids : tuple of int
-        Per-detector patch (code-block) assignment.
-    num_blocks : int
-        Expected number of distinct code blocks.
-    observables : tuple of str
-        Ordered observable names.
-    """
-
-    phase_windows: tuple[PhaseWindow, ...]
-    seam_detector_indices: tuple[int, ...]
-    patch_ids: tuple[int, ...]
-    num_blocks: int
-    observables: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.phase_windows:
-            raise ValueError("phase_windows must be non-empty")
-        for i in range(len(self.phase_windows) - 1):
-            if (
-                abs(self.phase_windows[i].t_end - self.phase_windows[i + 1].t_start)
-                > 1e-9
-            ):
-                raise ValueError(
-                    f"phase_windows are not contiguous: window {i} ends at "
-                    f"{self.phase_windows[i].t_end}, window {i + 1} starts at "
-                    f"{self.phase_windows[i + 1].t_start}"
-                )
-        if self.num_blocks < 1:
-            raise ValueError(f"num_blocks must be >= 1, got {self.num_blocks}")
-        if not self.observables:
-            raise ValueError("observables must be non-empty")
-        actual_blocks = len(set(self.patch_ids)) if self.patch_ids else 0
-        if actual_blocks != self.num_blocks:
-            raise ValueError(
-                f"patch_ids has {actual_blocks} distinct values, "
-                f"expected num_blocks={self.num_blocks}"
-            )
-        for idx in self.seam_detector_indices:
-            if idx < 0:
-                raise ValueError(f"seam_detector_indices contains negative index {idx}")
-
-    def validate_against_coords(self, detector_coords: np.ndarray) -> None:
-        """Re-assert coordinate-dependent gate invariants.
-
-        Parameters
-        ----------
-        detector_coords : ndarray, shape ``(D, >=3)``
-            Detector coordinates with at least ``(x, y, t)``.
-
-        Raises
-        ------
-        ValueError
-            If any invariant is violated.
-        """
-        n_det = detector_coords.shape[0]
-        if len(self.patch_ids) != n_det:
-            raise ValueError(
-                f"patch_ids length ({len(self.patch_ids)}) != num_detectors ({n_det})"
-            )
-        for det_idx in range(n_det):
-            t = detector_coords[det_idx, 2]
-            if not any(pw.contains_time(t) for pw in self.phase_windows):
-                raise ValueError(
-                    f"detector {det_idx} at t={t} is not covered by any phase window"
-                )
-        merge_windows = [pw for pw in self.phase_windows if pw.name == "merge"]
-        has_merge = bool(merge_windows)
-        if has_merge and not self.seam_detector_indices:
-            raise ValueError(
-                "merge phase(s) present but seam_detector_indices is empty"
-            )
-        for idx in self.seam_detector_indices:
-            if idx >= n_det:
-                raise ValueError(f"seam detector index {idx} out of range [0, {n_det})")
-            t = detector_coords[idx, 2]
-            if not any(mw.contains_time(t) for mw in merge_windows):
-                raise ValueError(
-                    f"seam detector {idx} at t={t} is not inside any merge window"
-                )
-
-    def to_layout(self, detector_coords: np.ndarray) -> LogicalOperationLayout:
-        """Convert to the per-detector layout ``CircuitMetadata`` carries.
-
-        Parameters
-        ----------
-        detector_coords : ndarray, shape ``(D, >=3)``
-
-        Returns
-        -------
-        LogicalOperationLayout
-        """
-        n_det = detector_coords.shape[0]
-
-        phase_ids = np.empty(n_det, dtype=np.intp)
-        for det_idx in range(n_det):
-            t = detector_coords[det_idx, 2]
-            for pw_idx, pw in enumerate(self.phase_windows):
-                if pw.contains_time(t):
-                    phase_ids[det_idx] = pw_idx
-                    break
-
-        phase_names = tuple(pw.name for pw in self.phase_windows)
-
-        seam_set = frozenset(self.seam_detector_indices)
-        seam_mask = np.array([i in seam_set for i in range(n_det)], dtype=np.bool_)
-
-        return LogicalOperationLayout(
-            phase_ids=phase_ids,
-            phase_names=phase_names,
-            patch_ids=np.array(self.patch_ids, dtype=np.intp),
-            seam_mask=seam_mask,
-        )
-
-    @classmethod
-    def from_manifest(
-        cls,
-        manifest: dict[str, Any],
-        *,
-        observables: tuple[str, ...],
-        detector_coords: np.ndarray,
-    ) -> LogicalOperationMetadata:
-        """Build from a circuit manifest, re-asserting gate invariants.
-
-        Parameters
-        ----------
-        manifest : dict
-            Circuit manifest as read from JSON.
-        observables : tuple of str
-            Ordered observable names (from the operation profile).
-        detector_coords : ndarray, shape ``(D, >=3)``
-            Detector coordinates for coordinate-dependent validation.
-
-        Returns
-        -------
-        LogicalOperationMetadata
-
-        Raises
-        ------
-        ValueError
-            If the manifest is missing required fields or any gate invariant
-            is violated.
-        KeyError
-            If a required field is absent from the manifest.
-        """
-        raw_windows = manifest["phase_windows"]
-        phase_windows = tuple(
-            PhaseWindow(name=pw["name"], t_start=pw["t_start"], t_end=pw["t_end"])
-            for pw in raw_windows
-        )
-        seam_detector_indices = tuple(manifest["seam_detector_indices"])
-        patch_ids = tuple(manifest["patch_ids"])
-        num_blocks = int(manifest["num_blocks"])
-
-        meta = cls(
-            phase_windows=phase_windows,
-            seam_detector_indices=seam_detector_indices,
-            patch_ids=patch_ids,
-            num_blocks=num_blocks,
-            observables=observables,
-        )
-        meta.validate_against_coords(detector_coords)
-
-        n_obs = manifest.get("num_observables")
-        if n_obs is not None and int(n_obs) != len(observables):
-            raise ValueError(
-                f"manifest declares {n_obs} observables but profile "
-                f"provides {len(observables)} names: {observables}"
-            )
-
-        return meta
-
-
-def extract_logical_op_circuit_metadata(
-    circuit: stim.Circuit,
-    distance: int,
-    rounds: int,
-    *,
-    logical_op_metadata: LogicalOperationMetadata,
-) -> CircuitMetadata:
-    """Build a ``CircuitMetadata`` carrying a logical-operation layout.
-
-    Parameters
-    ----------
-    circuit : stim.Circuit
-        Compiled circuit.
-    distance : int
-        Code distance.
-    rounds : int
-        Number of syndrome measurement rounds.
-    logical_op_metadata : LogicalOperationMetadata
-        Pre-validated metadata record.
-
-    Returns
-    -------
-    CircuitMetadata
-    """
-    base = extract_circuit_metadata(circuit, distance, rounds)
-    logical_op_metadata.validate_against_coords(base.detector_coords)
-
-    return CircuitMetadata(
-        detector_coords=base.detector_coords,
-        distance=base.distance,
-        rounds=base.rounds,
-        num_detectors=base.num_detectors,
-        dem_edge_weights=base.dem_edge_weights,
-        layout=logical_op_metadata.to_layout(base.detector_coords),
-    )
 
 
 def _stim_compatible_noise(error_prob: float) -> NoiseModel:
@@ -821,59 +560,27 @@ def validate_logical_op_circuit(
                 f"need >= {_MIN_COORD_DIMS}"
             )
 
-    # 3. Phase windows partition the detector timeline
-    if not phase_windows:
-        raise fail("no phase windows declared")
-
-    for i in range(len(phase_windows) - 1):
-        if abs(phase_windows[i].t_end - phase_windows[i + 1].t_start) > 1e-9:
-            raise fail(
-                f"phase windows are not contiguous: window {i} ends at "
-                f"{phase_windows[i].t_end}, window {i + 1} starts at "
-                f"{phase_windows[i + 1].t_start}"
-            )
-
-    for det_idx in range(n_det):
-        t = coords[det_idx, 2]
-        covered = any(pw.contains_time(t) for pw in phase_windows)
-        if not covered:
-            win_repr = [(pw.name, pw.t_start, pw.t_end) for pw in phase_windows]
-            raise fail(
-                f"detector {det_idx} at t={t} is not covered "
-                f"by any phase window (windows: {win_repr})"
-            )
-
-    # 4. Seam detectors
-    has_merge = any(pw.name == "merge" for pw in phase_windows)
-    if has_merge and not seam_detector_indices:
-        raise fail("operation has merge phase(s) but seam_detector_indices is empty")
-
-    merge_windows = [pw for pw in phase_windows if pw.name == "merge"]
-    for idx in seam_detector_indices:
-        if idx < 0 or idx >= n_det:
-            raise fail(f"seam detector index {idx} out of range [0, {n_det})")
-        t = coords[idx, 2]
-        in_merge = any(mw.contains_time(t) for mw in merge_windows)
-        if not in_merge:
-            raise fail(f"seam detector {idx} at t={t} is not inside any merge window")
-
-    # 5. Patch IDs
-    if len(patch_ids) != n_det:
-        raise fail(f"patch_ids length ({len(patch_ids)}) != num_detectors ({n_det})")
-    actual_blocks = len(set(patch_ids)) if patch_ids else 0
-    if actual_blocks != num_blocks:
-        raise fail(
-            f"patch_ids has {actual_blocks} distinct patches, expected {num_blocks}"
+    # 3. Phase windows partition the timeline; seams lie in merge phases;
+    #    one patch id per detector over exactly num_blocks patches.
+    try:
+        build_layout(
+            phase_windows,
+            seam_detector_indices=seam_detector_indices,
+            patch_ids=patch_ids,
+            num_blocks=num_blocks,
+            detector_times=coords[:, 2],
         )
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
 
-    # 6. Observable count
+    # 4. Observable count
     if circuit.num_observables != expected_observable_count:
         raise fail(
             f"circuit has {circuit.num_observables} observables, "
             f"expected {expected_observable_count}"
         )
 
-    # 7. Each observable is non-trivial
+    # 5. Each observable is non-trivial
     observable_has_error = [False] * circuit.num_observables
     for _, targets in error_instructions(dem):
         for target in targets:

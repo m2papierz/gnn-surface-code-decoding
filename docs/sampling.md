@@ -16,6 +16,8 @@ into a reproducible sampling pipeline.
 
 ZZ merge/split circuits are emitted from tqec `BlockGraph` definitions via `sampling.logical_ops`.  Each committed circuit carries a manifest declaring the operation, phase structure, seam, and observable layout.
 
+Training and evaluation read that layout through `sampling.circuit_metadata`, which never imports tqec.  Each operation registers an extractor that takes a committed circuit's path and reads distance, rounds and layout from the manifest beside it.  `build_layout` validates the layout the same way at generation and at load: every detector lies in exactly one phase window, seam detectors lie in a merge phase, and patch ids cover exactly the declared blocks.  A manifest that fails any of these raises, naming the circuit's key.
+
 ### Detector error model (DEM)
 
 A DEM captures which physical faults trigger which *detectors* (differences between consecutive stabiliser outcomes) and which flip *observables* (the logical measurement).  The module calls `circuit.detector_error_model(decompose_errors=True)` to obtain a graph-like DEM suitable for matching.
@@ -57,6 +59,9 @@ uv run scripts/generate_ci_shard_memory.py
 ```python
 from sampling.sampler import CircuitSetting, WorkerSampler, settings_from_circuit_dir
 from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
+from sampling.profile import resolve_profile
+
+metadata = resolve_profile("zz_merge_split").metadata_extractor(circuit_path)
 ```
 
 ## Output structure
@@ -99,6 +104,7 @@ data/ci_shard/<operation>/
 ```
 src/sampling/
 ├── __init__.py
+├── circuit_metadata.py # Committed circuit => CircuitMetadata; phase windows, layout
 ├── dem.py             # Error mechanisms of a decomposed DEM, read once per circuit
 ├── experiment.py      # Experiment identity (operation, distance, rounds, p)
 ├── graph.py           # DEM => DetectorGraph conversion (incl. observable_flips)

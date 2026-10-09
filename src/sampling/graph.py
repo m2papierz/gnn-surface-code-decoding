@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
 
 import numpy as np
 import stim
@@ -46,6 +48,13 @@ def complete_graph_edge_count[CountT: (int, NDArray[np.int64])](
     return num_fired * (num_fired - 1)
 
 
+MERGE_PHASE: Final[str] = "merge"
+"""Phase during which the patches are merged; its detectors carry the seam."""
+
+PHASE_TYPES: tuple[str, ...] = ("memory", MERGE_PHASE, "split")
+"""Fixed vocabulary of phase types for the one-hot encoding."""
+
+
 @dataclass(frozen=True, slots=True)
 class LogicalOperationLayout:
     """Per-detector structure of a logical-operation circuit.
@@ -55,8 +64,8 @@ class LogicalOperationLayout:
     phase_ids : ndarray, shape ``(D,)``, intp
         Phase-window index of each detector.
     phase_names : tuple of str
-        Ordered phase-window names; ``phase_names[phase_ids[i]]`` is the
-        phase of detector *i*.
+        Ordered phase-window names, each in ``PHASE_TYPES``;
+        ``phase_names[phase_ids[i]]`` is the phase of detector *i*.
     patch_ids : ndarray, shape ``(D,)``, intp
         Patch (code-block) index of each detector.
     seam_mask : ndarray, shape ``(D,)``, bool
@@ -73,6 +82,12 @@ class LogicalOperationLayout:
             raise ValueError(f"phase_ids must be 1-D, got shape {self.phase_ids.shape}")
         if not self.phase_names:
             raise ValueError("phase_names must be non-empty")
+        # A name outside the vocabulary would encode as an all-zero one-hot.
+        unknown = sorted(set(self.phase_names) - set(PHASE_TYPES))
+        if unknown:
+            raise ValueError(
+                f"phase_names {unknown} are outside the phase vocabulary {PHASE_TYPES}"
+            )
         n_phases = len(self.phase_names)
         if self.phase_ids.min() < 0 or self.phase_ids.max() >= n_phases:
             raise ValueError(
@@ -99,8 +114,8 @@ class LogicalOperationLayout:
 class CircuitMetadata:
     """Precomputed per-circuit metadata for the graph builder.
 
-    Extracted once from a ``stim.Circuit`` via ``extract_circuit_metadata``
-    and shared read-only across DataLoader workers.
+    Extracted once per circuit by its operation's ``MetadataExtractor`` and
+    shared read-only across DataLoader workers.
 
     Parameters
     ----------
@@ -158,8 +173,9 @@ class CircuitMetadata:
             )
 
 
-type MetadataExtractor = Callable[[stim.Circuit, int, int], CircuitMetadata]
-"""``(circuit, distance, rounds) -> CircuitMetadata``; each operation names its own."""
+type MetadataExtractor = Callable[[Path], CircuitMetadata]
+"""``circuit_path -> CircuitMetadata`` for a committed circuit, read at the
+distance and rounds its manifest declares; each operation names its own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,9 +437,6 @@ def build_fired_detector_graph(
     )
 
 
-PHASE_TYPES: tuple[str, ...] = ("memory", "merge", "split")
-"""Fixed vocabulary of phase types for the one-hot encoding."""
-
 PHASED_NODE_DIM: int = 11
 """Phased node features: spatial 6 + phase one-hot 3 + patch_id 1 + is_seam 1."""
 
@@ -619,7 +632,7 @@ def build_phased_detector_graph(
 
     phase_name_arr = np.array(layout.phase_names)
     fired_phase_names = phase_name_arr[layout.phase_ids[fired]]
-    merge_mask = fired_phase_names == "merge"
+    merge_mask = fired_phase_names == MERGE_PHASE
 
     if merge_mask.any():
         d_x[merge_mask] = (x[merge_mask] - merge_center[0]) / merge_scale[0]

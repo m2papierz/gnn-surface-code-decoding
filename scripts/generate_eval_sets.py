@@ -207,7 +207,7 @@ def generate_eval_set(
     # Extract metadata using the profile's extractor so the eval set carries
     # the same inputs the builder will receive at training time.
     profile = resolve_profile(key.operation)
-    metadata = profile.metadata_extractor(circuit, distance, rounds)
+    metadata = profile.metadata_extractor(circuit_path)
 
     # Save - include phased metadata arrays when the operation provides them,
     # so the eval set is self-contained for its representation.

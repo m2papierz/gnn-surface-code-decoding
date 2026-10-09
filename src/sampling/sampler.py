@@ -237,7 +237,7 @@ class WorkerSampler:
             circuit = stim.Circuit.from_file(str(s.circuit_path))
             sampler_seed = stable_seed("sampler", f"idx={i}", base=worker_seed)
             compiled = circuit.compile_detector_sampler(seed=sampler_seed)
-            meta = metadata_extractor(circuit, s.distance, s.rounds)
+            meta = metadata_extractor(s.circuit_path)
 
             self._samplers.append(compiled)
             self._metadata.append(meta)

@@ -13,31 +13,20 @@ a config-supplied class path.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import numpy as _np
-
+from sampling.circuit_metadata import read_circuit_metadata, read_logical_op_metadata
 from sampling.experiment import validate_operation_name
-from sampling.graph import (
-    CircuitMetadata,
-    LogicalOperationLayout,
-    MetadataExtractor,
-    extract_circuit_metadata,
-)
+from sampling.graph import MetadataExtractor
 from sampling.representation import (
     DataContract,
     LabelSpec,
     resolve_builder,
     resolve_descriptor,
 )
-
-
-if TYPE_CHECKING:
-    import stim
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +56,8 @@ class OperationProfile:
     circuit_root : Path
         Relative path to the operation's circuit directory.
     metadata_extractor : MetadataExtractor
-        Builds the circuit metadata the representation's builder reads.
+        Reads a committed circuit of this operation into the metadata the
+        representation's builder reads.
     representation_version : str
         Representation version tag (e.g. ``"spatial"``).
     observable_names : tuple of str
@@ -184,7 +174,7 @@ _register(
     OperationProfile(
         operation="memory",
         circuit_root=Path("data/circuits/memory"),
-        metadata_extractor=extract_circuit_metadata,
+        metadata_extractor=read_circuit_metadata,
         representation_version="spatial",
         observable_names=("logical_observable",),
         metric_policy=MetricPolicy(include_per_round_ler=True),
@@ -194,88 +184,11 @@ _register(
 )
 
 
-def _make_logical_op_extractor(
-    circuit_root: Path,
-    observable_names: tuple[str, ...],
-) -> MetadataExtractor:
-    """Build a metadata extractor for a logical operation.
-
-    The returned function reads the circuit's manifest to obtain
-    phase/seam/patch metadata.  tqec is never imported: the manifest
-    carries the pre-validated structural data.
-
-    Parameters
-    ----------
-    circuit_root : Path
-        Root directory of the operation's committed circuits.
-    observable_names : tuple of str
-        Ordered observable names from the profile.
-    """
-
-    def _extractor(
-        circuit: stim.Circuit, distance: int, rounds: int
-    ) -> CircuitMetadata:
-        base = extract_circuit_metadata(circuit, distance, rounds)
-
-        prefix = f"d{distance}_r{rounds}_"
-        manifest: dict | None = None
-        for f in sorted(circuit_root.iterdir()):
-            if f.name.startswith(prefix) and f.name.endswith(".manifest.json"):
-                manifest = json.loads(f.read_text(encoding="utf-8"))
-                break
-        if manifest is None:
-            raise FileNotFoundError(
-                f"No manifest for d={distance}, r={rounds} in {circuit_root}"
-            )
-
-        n_obs = manifest.get("num_observables")
-        if n_obs is not None and int(n_obs) != len(observable_names):
-            raise ValueError(
-                f"Manifest declares {n_obs} observables but profile provides "
-                f"{len(observable_names)} names: {observable_names}"
-            )
-
-        raw_windows = manifest["phase_windows"]
-        coords = base.detector_coords
-        n_det = base.num_detectors
-
-        phase_ids = _np.empty(n_det, dtype=_np.intp)
-        for det_idx in range(n_det):
-            t = coords[det_idx, 2]
-            for pw_idx, pw in enumerate(raw_windows):
-                if pw["t_start"] <= t < pw["t_end"]:
-                    phase_ids[det_idx] = pw_idx
-                    break
-
-        seam_indices = _np.array(manifest["seam_detector_indices"], dtype=_np.intp)
-        seam_mask = _np.zeros(n_det, dtype=_np.bool_)
-        seam_mask[seam_indices] = True
-
-        return CircuitMetadata(
-            detector_coords=coords,
-            distance=base.distance,
-            rounds=base.rounds,
-            num_detectors=n_det,
-            dem_edge_weights=base.dem_edge_weights,
-            layout=LogicalOperationLayout(
-                phase_ids=phase_ids,
-                phase_names=tuple(pw["name"] for pw in raw_windows),
-                patch_ids=_np.array(manifest["patch_ids"], dtype=_np.intp),
-                seam_mask=seam_mask,
-            ),
-        )
-
-    return _extractor
-
-
 _register(
     OperationProfile(
         operation="zz_merge_split",
         circuit_root=Path("data/circuits/zz_merge_split"),
-        metadata_extractor=_make_logical_op_extractor(
-            circuit_root=Path("data/circuits/zz_merge_split"),
-            observable_names=("Z_0", "Z_1"),
-        ),
+        metadata_extractor=read_logical_op_metadata,
         representation_version="phased",
         observable_names=("Z_0", "Z_1"),
         metric_policy=MetricPolicy(include_per_round_ler=False),

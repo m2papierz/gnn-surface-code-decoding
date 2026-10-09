@@ -331,9 +331,7 @@ def _evaluate_at_setting(
         Per-setting results with LER and Wilson intervals for both decoders.
     """
     circuit = stim.Circuit.from_file(str(point.circuit_path))
-    metadata = resolve_profile(point.operation).metadata_extractor(
-        circuit, point.distance, point.rounds
-    )
+    metadata = resolve_profile(point.operation).metadata_extractor(point.circuit_path)
 
     sampler = circuit.compile_detector_sampler(seed=cfg.seed)
     dets, obs = sampler.sample(
