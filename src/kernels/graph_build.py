@@ -145,8 +145,9 @@ def detector_coords_to_device(
     -------
     Tensor, shape ``(D, 3)``, float64
     """
-    coords = metadata.detector_coords[:, :3]
-    return torch.as_tensor(coords, dtype=torch.float64, device=device).contiguous()
+    return torch.as_tensor(
+        metadata.detector_coords, dtype=torch.float64, device=device
+    ).contiguous()
 
 
 def metadata_to_device(
@@ -166,13 +167,12 @@ def metadata_to_device(
     -------
     DeviceMetadata
     """
-    coords = torch.as_tensor(
-        metadata.detector_coords[:, :3], dtype=torch.float64, device=device
-    ).contiguous()
     dem_weights = torch.as_tensor(
         metadata.dem_edge_weights, dtype=torch.float32, device=device
     ).contiguous()
-    return DeviceMetadata(coords=coords, dem_weights=dem_weights)
+    return DeviceMetadata(
+        coords=detector_coords_to_device(metadata, device), dem_weights=dem_weights
+    )
 
 
 def build_fired_detector_graphs(

@@ -1,9 +1,10 @@
-"""Tests for src/sampling/circuit_metadata.py: layouts and the extractors."""
+"""Tests for src/sampling/circuit_metadata.py: layouts, coordinates, extractors."""
 
 from __future__ import annotations
 
 import json
 import pickle
+import re
 import shutil
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from sampling.circuit_metadata import (
     read_logical_op_metadata,
 )
 from sampling.experiment import circuit_key, circuit_manifest_path
-from sampling.graph import LogicalOperationLayout
+from sampling.graph import LogicalOperationLayout, read_detector_coordinates
 from sampling.profile import registered_operations, resolve_profile
 
 
@@ -28,6 +29,14 @@ MERGE_SPLIT_CIRCUITS = sorted(
     (REPO_ROOT / "data/circuits/zz_merge_split").glob("*.stim"), key=str
 )
 MERGE_SPLIT_EVAL_SETS = sorted((REPO_ROOT / "data/eval/zz_merge_split").iterdir())
+COMMITTED_CIRCUITS = sorted((REPO_ROOT / "data/circuits").glob("*/*.stim"), key=str)
+FROZEN_SETS = sorted(
+    [
+        *(REPO_ROOT / "data/eval").glob("*/*/"),
+        *(REPO_ROOT / "data/ci_shard").glob("*/"),
+    ],
+    key=str,
+)
 
 _WINDOWS = (
     PhaseWindow("memory", 0.0, 1.0),
@@ -96,6 +105,94 @@ class TestAssignPhaseIds:
 
     def test_no_detectors_is_empty(self) -> None:
         assert assign_phase_ids(_WINDOWS, np.empty(0)).shape == (0,)
+
+
+def _declared_coordinates(circuit: stim.Circuit) -> list[list[float]]:
+    """Reference: each DETECTOR's arguments in the flattened, shift-free circuit."""
+    return [
+        instruction.gate_args_copy()
+        for instruction in circuit.flattened()
+        if isinstance(instruction, stim.CircuitInstruction)
+        and instruction.name == "DETECTOR"
+    ]
+
+
+def _frozen_coordinates(frozen_dir: Path) -> np.ndarray:
+    """The detector coordinates a frozen eval set or CI shard stored."""
+    if (frozen_dir / "data.npz").exists():
+        return np.load(frozen_dir / "data.npz")["detector_coords"]
+    return np.load(frozen_dir / "detector_coords.npy")
+
+
+class TestReadDetectorCoordinates:
+    def test_reads_shifted_coordinates_in_detector_order(self) -> None:
+        circuit = stim.Circuit("""
+            M 0 1 2
+            DETECTOR(1, 2, 0) rec[-1]
+            REPEAT 2 {
+                DETECTOR(3, 4, 0) rec[-2]
+                SHIFT_COORDS(0, 0, 1)
+            }
+        """)
+        coords = read_detector_coordinates(circuit)
+        assert coords.dtype == np.float64
+        np.testing.assert_array_equal(coords, [[1, 2, 0], [3, 4, 0], [3, 4, 1]])
+
+    @pytest.mark.parametrize(
+        ("declaration", "declared"),
+        [
+            ("DETECTOR", "0 coordinate dimensions ()"),
+            ("DETECTOR(1, 2)", "2 coordinate dimensions (1.0, 2.0)"),
+            ("DETECTOR(1, 2, 3, 4)", "4 coordinate dimensions (1.0, 2.0, 3.0, 4.0)"),
+        ],
+    )
+    def test_detector_without_exactly_xyt_raises_naming_it(
+        self, declaration: str, declared: str
+    ) -> None:
+        circuit = stim.Circuit(f"""
+            M 0 1 2
+            DETECTOR(0, 0, 0) rec[-1]
+            {declaration} rec[-2]
+            DETECTOR(0, 0, 1) rec[-3]
+        """)
+        with pytest.raises(
+            ValueError,
+            match=rf"detector 1 declares {re.escape(declared)}, expected 3: "
+            r"\(x, y, t\); 1 of 3 detectors are malformed",
+        ):
+            read_detector_coordinates(circuit)
+
+    def test_no_detectors_is_empty(self) -> None:
+        assert read_detector_coordinates(stim.Circuit("M 0")).shape == (0, 3)
+
+    @pytest.mark.parametrize(
+        "circuit_path",
+        COMMITTED_CIRCUITS,
+        ids=lambda path: f"{path.parent.name}/{path.stem}",
+    )
+    def test_committed_circuit_reads_what_its_detectors_declare(
+        self, circuit_path: Path
+    ) -> None:
+        circuit = stim.Circuit.from_file(str(circuit_path))
+        np.testing.assert_array_equal(
+            read_detector_coordinates(circuit),
+            np.array(_declared_coordinates(circuit), dtype=np.float64),
+            strict=True,
+        )
+
+    @pytest.mark.parametrize(
+        "frozen_dir",
+        FROZEN_SETS,
+        ids=lambda path: f"{path.parent.name}/{path.name}",
+    )
+    def test_frozen_set_stored_its_circuits_coordinates(self, frozen_dir: Path) -> None:
+        manifest = json.loads((frozen_dir / "manifest.json").read_text())
+        circuit = stim.Circuit.from_file(str(REPO_ROOT / manifest["circuit_file"]))
+        np.testing.assert_array_equal(
+            read_detector_coordinates(circuit),
+            _frozen_coordinates(frozen_dir),
+            strict=True,
+        )
 
 
 class TestBuildLayout:
@@ -258,6 +355,27 @@ class TestResolutionByIdentity:
             match=rf"{circuit_key(circuit_path)}: .*detector {first} at t=0.0 is not",
         ):
             read_logical_op_metadata(circuit_path)
+
+
+class TestDetectorWithoutCoordinates:
+    @pytest.mark.parametrize("operation", sorted(registered_operations()))
+    def test_raises_naming_the_detector_and_the_circuit(
+        self, operation: str, tmp_path: Path
+    ) -> None:
+        profile = resolve_profile(operation)
+        committed = sorted((REPO_ROOT / profile.circuit_root).glob("*.stim"))[0]
+        circuit_path = _copy_circuit(committed, tmp_path)
+        text = circuit_path.read_text()
+        first = text.index("DETECTOR(")
+        circuit_path.write_text(
+            text[:first] + "DETECTOR" + text[text.index(")", first) + 1 :]
+        )
+        with pytest.raises(
+            ValueError,
+            match=rf"{circuit_key(circuit_path)}: circuit "
+            rf"{re.escape(str(circuit_path))}: detector 0 declares 0 coordinate",
+        ):
+            profile.metadata_extractor(circuit_path)
 
 
 class TestRegisteredExtractors:

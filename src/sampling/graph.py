@@ -25,6 +25,9 @@ NODE_DIM: int = 6
 EDGE_DIM: int = 6
 """Edge feature dimensionality: dx, dy, dt, euclidean, chebyshev, dem_weight."""
 
+COORDINATE_DIM: Final[int] = 3
+"""Coordinates every detector declares: ``(x, y, t)``."""
+
 
 def complete_graph_edge_count[CountT: (int, NDArray[np.int64])](
     num_fired: CountT,
@@ -145,17 +148,12 @@ class CircuitMetadata:
     layout: LogicalOperationLayout | None = None
 
     def __post_init__(self) -> None:
-        if self.detector_coords.ndim != 2 or self.detector_coords.shape[1] < 3:
-            raise ValueError(
-                f"detector_coords must have shape (D, >=3), "
-                f"got {self.detector_coords.shape}"
-            )
-        if self.detector_coords.shape[0] != self.num_detectors:
-            raise ValueError(
-                f"detector_coords rows {self.detector_coords.shape[0]} != "
-                f"num_detectors {self.num_detectors}"
-            )
         D = self.num_detectors
+        if self.detector_coords.shape != (D, COORDINATE_DIM):
+            raise ValueError(
+                f"detector_coords shape {self.detector_coords.shape} != "
+                f"expected ({D}, {COORDINATE_DIM})"
+            )
         if self.dem_edge_weights.shape != (D, D):
             raise ValueError(
                 f"dem_edge_weights shape {self.dem_edge_weights.shape} != "
@@ -290,6 +288,39 @@ def _extract_dem_weights(circuit: stim.Circuit) -> np.ndarray:
     return 1.0 - np.exp(log_complement)
 
 
+def read_detector_coordinates(circuit: stim.Circuit) -> NDArray[np.float64]:
+    """Read the ``(x, y, t)`` every detector of a circuit declares.
+
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        Circuit whose detectors are annotated with coordinates.
+
+    Returns
+    -------
+    ndarray, shape ``(D, 3)``, float64
+        Row *i* holds detector *i*'s coordinates, ``SHIFT_COORDS`` applied.
+
+    Raises
+    ------
+    ValueError
+        If any detector declares other than three coordinates, naming the
+        first such detector and what it declares.
+    """
+    by_index = circuit.get_detector_coordinates()
+    declared = [by_index[i] for i in range(circuit.num_detectors)]
+    arity = np.fromiter(map(len, declared), dtype=np.intp, count=len(declared))
+    malformed = np.flatnonzero(arity != COORDINATE_DIM)
+    if malformed.size:
+        first = int(malformed[0])
+        raise ValueError(
+            f"detector {first} declares {arity[first]} coordinate dimensions "
+            f"{tuple(declared[first])}, expected {COORDINATE_DIM}: (x, y, t); "
+            f"{malformed.size} of {len(declared)} detectors are malformed"
+        )
+    return np.array(declared, dtype=np.float64).reshape(len(declared), COORDINATE_DIM)
+
+
 def extract_circuit_metadata(
     circuit: stim.Circuit,
     distance: int,
@@ -300,7 +331,7 @@ def extract_circuit_metadata(
     Parameters
     ----------
     circuit : stim.Circuit
-        Circuit with detector coordinates annotated.
+        Circuit whose detectors are annotated with ``(x, y, t)``.
     distance : int
         Code distance (used for spatial normalization as ``2 * d``).
     rounds : int
@@ -309,23 +340,18 @@ def extract_circuit_metadata(
     Returns
     -------
     CircuitMetadata
+
+    Raises
+    ------
+    ValueError
+        If a detector does not declare exactly ``(x, y, t)``.
     """
-    coord_dict = circuit.get_detector_coordinates()
-    num_det = circuit.num_detectors
-
-    coords = np.zeros((num_det, 3), dtype=np.float64)
-    for det_id, c in coord_dict.items():
-        if 0 <= det_id < num_det:
-            coords[det_id, : min(len(c), 3)] = c[:3]
-
-    dem_weights = _extract_dem_weights(circuit)
-
     return CircuitMetadata(
-        detector_coords=coords,
+        detector_coords=read_detector_coordinates(circuit),
         distance=distance,
         rounds=rounds,
-        num_detectors=num_det,
-        dem_edge_weights=dem_weights,
+        num_detectors=circuit.num_detectors,
+        dem_edge_weights=_extract_dem_weights(circuit),
     )
 
 

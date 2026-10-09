@@ -25,6 +25,7 @@ from tqec.utils.scale import LinearFunction
 from sampling.circuit_metadata import PhaseWindow, build_layout
 from sampling.dem import error_instructions
 from sampling.experiment import ExperimentKey, write_circuit_manifest
+from sampling.graph import read_detector_coordinates
 
 
 __all__ = [
@@ -43,8 +44,6 @@ _DEFAULT_TEMPORAL_HEIGHT: Final = LinearFunction(2, -1)  # 2k − 1
 # once per round on data qubits only.  This factor equalises the total DEM
 # error budget across d ∈ {3, 5, 7}.
 _IDLE_DEPOLARIZATION_FACTOR: Final[float] = 0.26
-
-_MIN_COORD_DIMS: Final[int] = 3
 
 
 class CircuitValidationError(Exception):
@@ -115,13 +114,11 @@ def _align_detector_times(circuit: stim.Circuit) -> stim.Circuit:
         Circuit with boundary detectors shifted to ``t_max + 1``.  Returned
         unchanged when no duplicate boundary positions are detected.
     """
-    coords = circuit.get_detector_coordinates()
-    if not coords:
-        return circuit
-
     by_t: dict[float, list[tuple[int, tuple[float, float]]]] = defaultdict(list)
-    for idx, c in coords.items():
-        by_t[c[2]].append((idx, (c[0], c[1])))
+    for idx, (x, y, t) in enumerate(read_detector_coordinates(circuit).tolist()):
+        by_t[t].append((idx, (x, y)))
+    if not by_t:
+        return circuit
 
     max_t = max(by_t)
     t0_positions = {pos for _, pos in by_t[0.0]}
@@ -202,19 +199,6 @@ def compile_block_graph_circuit(
     return tcg.generate_stim_circuit(k=k, noise_model=noise)
 
 
-def _detector_coords_array(circuit: stim.Circuit) -> np.ndarray:
-    """Return detector coordinates as a ``(num_detectors, D)`` float64 array."""
-    raw = circuit.get_detector_coordinates()
-    n = circuit.num_detectors
-    if n == 0:
-        return np.empty((0, 3), dtype=np.float64)
-    ndim = len(raw[0])
-    arr = np.empty((n, ndim), dtype=np.float64)
-    for i in range(n):
-        arr[i] = raw[i]
-    return arr
-
-
 def _z_levels(block_graph: BlockGraph) -> list[int]:
     """Sorted unique z-positions of cubes in the block graph."""
     return sorted({cube.position.z for cube in block_graph.cubes})
@@ -271,7 +255,7 @@ def derive_circuit_metadata(
         Keys: ``phase_windows``, ``seam_detector_indices``, ``patch_ids``,
         ``num_blocks``.
     """
-    coords = _detector_coords_array(circuit)
+    coords = read_detector_coordinates(circuit)
     n_det = circuit.num_detectors
     z_levels = _z_levels(block_graph)
     n_z = len(z_levels)
@@ -531,7 +515,6 @@ def validate_logical_op_circuit(
     dict
         Provenance fields for the manifest.
     """
-    n_det = circuit.num_detectors
 
     def fail(msg: str) -> CircuitValidationError:
         return _gate_fail(operation, distance, error_prob, msg)
@@ -551,14 +534,11 @@ def validate_logical_op_circuit(
     except Exception:
         tqec_predecomposes = False
 
-    # 2. Coordinates are 3-D or wider
-    coords = _detector_coords_array(circuit)
-    if n_det > 0:
-        if coords.shape[1] < _MIN_COORD_DIMS:
-            raise fail(
-                f"detector coordinates have {coords.shape[1]} dimensions, "
-                f"need >= {_MIN_COORD_DIMS}"
-            )
+    # 2. Every detector declares exactly (x, y, t)
+    try:
+        coords = read_detector_coordinates(circuit)
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
 
     # 3. Phase windows partition the timeline; seams lie in merge phases;
     #    one patch id per detector over exactly num_blocks patches.

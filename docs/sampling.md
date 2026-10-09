@@ -16,7 +16,7 @@ into a reproducible sampling pipeline.
 
 ZZ merge/split circuits are emitted from tqec `BlockGraph` definitions via `sampling.logical_ops`.  Each committed circuit carries a manifest declaring the operation, phase structure, seam, and observable layout.
 
-Training and evaluation read that layout through `sampling.circuit_metadata`, which never imports tqec.  Each operation registers an extractor that takes a committed circuit's path and reads distance, rounds and layout from the manifest beside it.  `build_layout` validates the layout the same way at generation and at load: every detector lies in exactly one phase window, seam detectors lie in a merge phase, and patch ids cover exactly the declared blocks.  A manifest that fails any of these raises, naming the circuit's key.
+Training and evaluation read that layout through `sampling.circuit_metadata`, which never imports tqec.  Each operation registers an extractor that takes a committed circuit's path and reads distance, rounds and layout from the manifest beside it.  `build_layout` validates the layout the same way at generation and at load: every detector lies in exactly one phase window, seam detectors lie in a merge phase, and patch ids cover exactly the declared blocks.  A manifest that fails any of these raises, naming the circuit's key.  Every detector declares exactly `(x, y, t)`; one that declares anything else raises, naming the detector and the circuit, at generation and at load alike.
 
 ### Detector error model (DEM)
 

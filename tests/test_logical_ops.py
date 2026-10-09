@@ -368,6 +368,30 @@ class TestValidateGateBrokenInputs:
                 expected_observable_count=1,
             )
 
+    def test_coordinates_wider_than_xyt_rejected(self) -> None:
+        """A fourth coordinate has no meaning downstream, so the gate refuses it."""
+        bad_circuit = stim.Circuit("""
+            R 0
+            M 0
+            DETECTOR(1.0, 2.0, 0.0, 1.0) rec[-1]
+            OBSERVABLE_INCLUDE(0) rec[-1]
+        """)
+        with pytest.raises(
+            CircuitValidationError,
+            match=r"test \(d=3, p=0.003\): detector 0 declares 4 coordinate",
+        ):
+            validate_logical_op_circuit(
+                bad_circuit,
+                operation="test",
+                distance=3,
+                error_prob=0.003,
+                phase_windows=[PhaseWindow("memory", 0.0, 10.0)],
+                seam_detector_indices=[],
+                patch_ids=[0],
+                num_blocks=1,
+                expected_observable_count=1,
+            )
+
 
 class TestGenerateAndWrite:
     def test_writes_circuit_and_manifest(self, tmp_path: Path) -> None:

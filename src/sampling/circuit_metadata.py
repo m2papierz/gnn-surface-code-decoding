@@ -272,7 +272,9 @@ def read_circuit_metadata(circuit_path: Path) -> CircuitMetadata:
     FileNotFoundError
         If the circuit carries no manifest.
     ValueError
-        If the manifest is unreadable or declares an invalid key.
+        If the manifest is unreadable or declares an invalid key, or if a
+        detector does not declare exactly ``(x, y, t)``; the message names
+        the circuit.
     """
     return _extract_at_key(circuit_path, circuit_key(circuit_path))
 
@@ -297,8 +299,9 @@ def read_logical_op_metadata(circuit_path: Path) -> CircuitMetadata:
         If the circuit carries no manifest.
     ValueError
         If the manifest is unreadable, declares an invalid key, lacks a layout
-        field, or declares a layout its circuit's detectors contradict; the
-        message names the key and the manifest.
+        field, or declares a layout its circuit's detectors contradict, or if
+        a detector does not declare exactly ``(x, y, t)``; the message names
+        the key and the manifest or circuit.
     """
     manifest_path = circuit_manifest_path(circuit_path)
     manifest = read_circuit_manifest(circuit_path)
@@ -342,4 +345,7 @@ def _layout_from_manifest(
 def _extract_at_key(circuit_path: Path, key: ExperimentKey) -> CircuitMetadata:
     """Load a circuit and extract its metadata at the key's distance and rounds."""
     circuit = stim.Circuit.from_file(str(circuit_path))
-    return extract_circuit_metadata(circuit, key.distance, key.rounds)
+    try:
+        return extract_circuit_metadata(circuit, key.distance, key.rounds)
+    except ValueError as exc:
+        raise ValueError(f"{key}: circuit {circuit_path}: {exc}") from exc
