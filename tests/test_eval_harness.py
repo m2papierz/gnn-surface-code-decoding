@@ -7,6 +7,7 @@ model required.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from evaluation.stats import EvalOutcome, WilsonInterval
 from model.decoder import build_model
 from sampling.graph import CircuitMetadata
 from sampling.profile import resolve_profile
+from synthetic_eval_sets import MEMORY_D3, synthetic_eval_set
 
 
 CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
@@ -44,15 +46,8 @@ def ci_shard_eval_set() -> EvalSet:
 
 @pytest.fixture(scope="module")
 def circuit_metadata(ci_shard_eval_set: EvalSet) -> CircuitMetadata:
-    """Build CircuitMetadata from the CI shard."""
-    n_det = ci_shard_eval_set.syndromes.shape[1]
-    return CircuitMetadata(
-        detector_coords=ci_shard_eval_set.detector_coords,
-        distance=ci_shard_eval_set.distance,
-        rounds=ci_shard_eval_set.rounds,
-        num_detectors=n_det,
-        dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
-    )
+    """The CI shard's circuit metadata, as its loader read it."""
+    return ci_shard_eval_set.circuit_metadata
 
 
 class FakeDecoder:
@@ -118,7 +113,7 @@ class TestLoadEvalSet:
         assert es.num_shots == 256
         assert es.syndromes.shape == (256, 24)
         assert es.observables.shape == (256, 1)
-        assert es.detector_coords.shape == (24, 3)
+        assert es.circuit_metadata.detector_coords.shape == (24, 3)
 
     def test_load_npz_format(self) -> None:
         """Load an eval set in npz format if available."""
@@ -150,6 +145,23 @@ class TestLoadEvalSet:
             load_eval_set(tmp_path)
 
 
+def _write_bound_manifest(root: Path, distance: int, error_prob: float) -> None:
+    """A set directory bound to the committed memory circuit at (d, p)."""
+    p_str = f"{error_prob:.4f}".replace(".", "_")
+    sub = root / f"d{distance}_p{p_str}"
+    sub.mkdir()
+    circuit = CIRCUIT_DIR / f"d{distance}_r{distance}_p{error_prob}.stim".replace(
+        "0.", "0_"
+    )
+    manifest = {
+        "circuit_file": str(circuit),
+        "circuit_sha256": hashlib.sha256(circuit.read_bytes()).hexdigest(),
+        "distance": distance,
+        "error_prob": error_prob,
+    }
+    (sub / "manifest.json").write_text(json.dumps(manifest))
+
+
 class TestDiscoverEvalSets:
     def test_discovers_existing_sets(self) -> None:
         if not EVAL_DIR.exists():
@@ -176,27 +188,27 @@ class TestDiscoverEvalSets:
     def test_empty_dir_returns_empty(self, tmp_path: Path) -> None:
         assert discover_eval_sets(tmp_path) == []
 
+    def test_set_not_bound_to_its_circuit_fails_discovery(self, tmp_path: Path) -> None:
+        _write_bound_manifest(tmp_path, 3, 0.01)
+        manifest_path = tmp_path / "d3_p0_0100" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["circuit_sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+
+        with pytest.raises(ValueError, match="hashes to"):
+            discover_eval_sets(tmp_path, distances=[5])
+
     def test_synthetic_discover_all(self, tmp_path: Path) -> None:
         """Discover with synthetic directories (no live data needed)."""
         for d, p in [(3, 0.01), (5, 0.005), (7, 0.01)]:
-            p_str = f"{p:.4f}".replace(".", "_")
-            sub = tmp_path / f"d{d}_p{p_str}"
-            sub.mkdir()
-            (sub / "manifest.json").write_text(
-                json.dumps({"distance": d, "error_prob": p})
-            )
+            _write_bound_manifest(tmp_path, d, p)
 
         dirs = discover_eval_sets(tmp_path)
         assert len(dirs) == 3
 
     def test_synthetic_filter_by_distance(self, tmp_path: Path) -> None:
         for d, p in [(3, 0.01), (5, 0.005)]:
-            p_str = f"{p:.4f}".replace(".", "_")
-            sub = tmp_path / f"d{d}_p{p_str}"
-            sub.mkdir()
-            (sub / "manifest.json").write_text(
-                json.dumps({"distance": d, "error_prob": p})
-            )
+            _write_bound_manifest(tmp_path, d, p)
 
         dirs = discover_eval_sets(tmp_path, distances=[3])
         assert len(dirs) == 1
@@ -205,12 +217,7 @@ class TestDiscoverEvalSets:
 
     def test_synthetic_filter_by_error_prob(self, tmp_path: Path) -> None:
         for d, p in [(3, 0.01), (5, 0.005), (7, 0.01)]:
-            p_str = f"{p:.4f}".replace(".", "_")
-            sub = tmp_path / f"d{d}_p{p_str}"
-            sub.mkdir()
-            (sub / "manifest.json").write_text(
-                json.dumps({"distance": d, "error_prob": p})
-            )
+            _write_bound_manifest(tmp_path, d, p)
 
         dirs = discover_eval_sets(tmp_path, error_probs=[0.01])
         assert len(dirs) == 2
@@ -227,23 +234,12 @@ class TestEvaluatePoint:
         rng = np.random.default_rng(42)
         syndromes = rng.integers(0, 2, size=(n, n_det), dtype=np.uint8)
         observables = rng.integers(0, 2, size=(n, 1), dtype=np.uint8)
-        coords = rng.random((n_det, 3))
 
-        return EvalSet(
-            syndromes=syndromes,
-            observables=observables,
-            detector_coords=coords,
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-            num_shots=n,
-            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-            manifest={
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            },
+        return synthetic_eval_set(
+            syndromes,
+            observables,
+            key=MEMORY_D3,
+            observable_names=("logical_observable",),
         )
 
     def test_two_identical_decoders_resolved_parity(
@@ -338,21 +334,11 @@ class TestEvaluatePoint:
         """Tail shots must not be truncated when n_shots % check_interval != 0."""
         n = 250
         rng = np.random.default_rng(7)
-        es = EvalSet(
-            syndromes=rng.integers(0, 2, size=(n, 10), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=rng.random((10, 3)),
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-            num_shots=n,
-            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-            manifest={
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            },
+        es = synthetic_eval_set(
+            rng.integers(0, 2, size=(n, 10), dtype=np.uint8),
+            rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
+            key=MEMORY_D3,
+            observable_names=("logical_observable",),
         )
         result = evaluate_point(
             es,
@@ -367,21 +353,11 @@ class TestEvaluatePoint:
         n = 500
         rng = np.random.default_rng(99)
         observables = rng.integers(0, 2, size=(n, 1), dtype=np.uint8)
-        es = EvalSet(
-            syndromes=rng.integers(0, 2, size=(n, 10), dtype=np.uint8),
-            observables=observables,
-            detector_coords=rng.random((10, 3)),
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-            num_shots=n,
-            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-            manifest={
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            },
+        es = synthetic_eval_set(
+            rng.integers(0, 2, size=(n, 10), dtype=np.uint8),
+            observables,
+            key=MEMORY_D3,
+            observable_names=("logical_observable",),
         )
         # 'ref': always predicts correctly (0 errors)
         # 'baseline': always predicts correctly too (parity with ref)

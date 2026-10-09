@@ -211,7 +211,6 @@ def run_dry_run(cfg: EvalConfig) -> EvalReport:
         reference_decoder="gnn",
         check_interval=eval_set.num_shots,
         metric_policy=profile.metric_policy,
-        observable_names=profile.observable_names,
         space_time_convention=profile.space_time_convention,
     )
 
@@ -290,7 +289,6 @@ def run_harness(cfg: EvalConfig) -> EvalReport:
             reference_decoder="gnn",
             stopping_baseline="correlated",
             metric_policy=profile.metric_policy,
-            observable_names=profile.observable_names,
             space_time_convention=profile.space_time_convention,
         )
         elapsed = time.perf_counter() - t0

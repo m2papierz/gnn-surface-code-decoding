@@ -2,8 +2,10 @@
 
 Adaptively samples shots from committed circuit files until each point
 accumulates ≥400 MWPM logical errors (target) or hits the 1,000,000 shot cap.
-Each set is saved as compressed numpy archives with a manifest recording all
-provenance information, under the root of the operation its circuits declare.
+Each set is saved as a compressed numpy archive of its shots with a manifest
+recording all provenance information, under the root of the operation its
+circuits declare.  A set holds only shots: everything else is read from the
+circuit its manifest binds it to by sha256.
 
 ``--operation`` has no default: an evaluation set inherits the identity of the
 circuits it was sampled from, so the operation is stated at the call and its
@@ -142,10 +144,10 @@ def generate_eval_set(
     error_prob = key.error_prob
 
     circuit = stim.Circuit.from_file(str(circuit_path))
-    # The profile's extractor, so the set carries the inputs the builder reads
-    # at training time; read before sampling, so a refused circuit costs none.
+    # The extractor the loader reads the set's circuit with, run before
+    # sampling, so a circuit the loader would refuse costs no shots.
     profile = resolve_profile(key.operation)
-    metadata = profile.metadata_extractor(
+    profile.metadata_extractor(
         circuit_path, num_observables=profile.data_contract.num_observables
     )
     baseline: Decoder = (
@@ -210,24 +212,15 @@ def generate_eval_set(
         f"Accumulated {baseline_errors_total} != verified {verified_errors}"
     )
 
-    # Save - include phased metadata arrays when the operation provides them,
-    # so the eval set is self-contained for its representation.
     p_str = f"{error_prob:.4f}".replace(".", "_")
     point_dir = output_root / key.operation / f"d{distance}_p{p_str}"
     point_dir.mkdir(parents=True, exist_ok=True)
-
-    npz_arrays: dict[str, np.ndarray] = {
-        "syndromes": all_syndromes,
-        "observables": all_observables,
-        "detector_coords": metadata.detector_coords,
-    }
-    layout = metadata.layout
-    if layout is not None:
-        npz_arrays["phase_ids"] = layout.phase_ids
-        npz_arrays["patch_ids"] = layout.patch_ids
-        npz_arrays["seam_mask"] = layout.seam_mask
-
-    np.savez_compressed(point_dir / "data.npz", allow_pickle=False, **npz_arrays)
+    np.savez_compressed(
+        point_dir / "data.npz",
+        allow_pickle=False,
+        syndromes=all_syndromes,
+        observables=all_observables,
+    )
 
     positive_count = int(all_observables.any(axis=1).sum())
     manifest: dict = {
@@ -243,8 +236,6 @@ def generate_eval_set(
         "num_shots": shots_total,
         "num_detectors": circuit.num_detectors,
         "num_observables": circuit.num_observables,
-        "representation_version": profile.representation_version,
-        "observable_names": list(profile.observable_names),
         "sizing_baseline": sizing_baseline,
         "baseline_errors": verified_errors,
         "baseline_ler": verified_errors / shots_total,
@@ -262,8 +253,6 @@ def generate_eval_set(
             f" --baseline {sizing_baseline}"
         ),
     }
-    if layout is not None:
-        manifest["phase_names"] = list(layout.phase_names)
 
     (point_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=False),
@@ -355,9 +344,8 @@ def main() -> None:
     elapsed = time.time() - t0
 
     # Summary table
-    baseline_label = results[0].get("sizing_baseline", "mwpm") if results else "mwpm"
-    bl_col = f"{baseline_label} Err"
-    bl_ler_col = f"{baseline_label} LER"
+    bl_col = f"{args.baseline} Err"
+    bl_ler_col = f"{args.baseline} LER"
 
     print()
     print("=" * 90)
@@ -370,12 +358,10 @@ def main() -> None:
     print("-" * 90)
     for r in results:
         status = "OK" if r["target_met"] else "BELOW"
-        bl_errors = r.get("baseline_errors", r.get("mwpm_errors", 0))
-        bl_ler = r.get("baseline_ler", r.get("mwpm_ler", 0.0))
         print(
             f"d{r['distance']}_p{r['error_prob']:<7.4f} "
-            f"{r['num_shots']:>8} {bl_errors:>12} "
-            f"{bl_ler:>14.6f} {r['positive_rate']:>9.4f} "
+            f"{r['num_shots']:>8} {r['baseline_errors']:>12} "
+            f"{r['baseline_ler']:>14.6f} {r['positive_rate']:>9.4f} "
             f"{r['n_max_p99_9']:>13.0f} {status:>8}"
         )
 
@@ -419,10 +405,9 @@ def main() -> None:
             f"WARNING: {len(below)} point(s) below {args.target_errors}-error target:"
         )
         for r in below:
-            bl_errors = r.get("baseline_errors", r.get("mwpm_errors", 0))
             print(
                 f"  d={r['distance']} p={r['error_prob']:.4f}: "
-                f"{bl_errors} errors in {r['num_shots']} shots"
+                f"{r['baseline_errors']} errors in {r['num_shots']} shots"
             )
 
     print(f"\nTotal generation time: {elapsed:.1f}s")

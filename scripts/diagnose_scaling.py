@@ -52,7 +52,6 @@ from evaluation.scaling_diagnostics import (
 from sampling.dem import read_dem_mechanisms
 from sampling.experiment import ExperimentKey
 from sampling.profile import (
-    OperationProfile,
     registered_operations,
     resolve_profile,
 )
@@ -74,24 +73,11 @@ def _manifest_field(eval_set: EvalSet, eval_dir: Path, name: str) -> Any:
     return eval_set.manifest[name]
 
 
-def _verified_circuit_sha256(eval_set: EvalSet, eval_dir: Path) -> str:
-    """Hash the set's circuit and require the hash the set's manifest recorded."""
-    recorded = _manifest_field(eval_set, eval_dir, "circuit_sha256")
-    actual = hashlib.sha256(Path(eval_set.circuit_file).read_bytes()).hexdigest()
-    if actual != recorded:
-        raise ValueError(
-            f"Circuit {eval_set.circuit_file} hashes to {actual}, but the eval "
-            f"set in {eval_dir} was sampled from {recorded}; frozen shots are "
-            f"tied to the bytes they were sampled from"
-        )
-    return actual
-
-
 def _verified_observable_flips(
-    eval_set: EvalSet, eval_dir: Path, profile: OperationProfile
+    eval_set: EvalSet, eval_dir: Path
 ) -> ObservableFlipRates:
     """Count the set's observable flips and require the manifest's positive count."""
-    flips = observable_flip_rates(eval_set.observables, profile.observable_names)
+    flips = observable_flip_rates(eval_set.observables, eval_set.observable_names)
     recorded = _manifest_field(eval_set, eval_dir, "positive_count")
     counted = flips.any_observable.n_errors
     if counted != recorded:
@@ -117,20 +103,13 @@ def _diagnose_point(
 ) -> PointDiagnostics:
     """Diagnose the frozen set in ``eval_dir`` against its committed circuit."""
     eval_set = load_eval_set(eval_dir)
-    key = ExperimentKey(
-        operation=eval_set.operation,
-        distance=eval_set.distance,
-        rounds=eval_set.rounds,
-        error_prob=eval_set.error_prob,
-    )
-    if circuits.get(key) != Path(eval_set.circuit_file):
+    key = eval_set.key
+    if circuits.get(key) != eval_set.circuit_file:
         raise ValueError(
             f"Eval set {eval_dir} is for {key} and names circuit "
             f"{eval_set.circuit_file}, but circuit discovery resolves that point "
             f"to {circuits.get(key)}"
         )
-    if eval_set.num_shots == 0:
-        raise ValueError(f"Eval set {eval_dir} for {key} holds no shots")
 
     circuit_path = circuits[key]
     circuit = stim.Circuit.from_file(str(circuit_path))
@@ -139,10 +118,10 @@ def _diagnose_point(
     return PointDiagnostics(
         key=key,
         circuit_file=str(circuit_path),
-        circuit_sha256=_verified_circuit_sha256(eval_set, eval_dir),
+        circuit_sha256=eval_set.circuit_sha256,
         shots_sha256=_shots_sha256(eval_set),
         graph=graph_size(eval_set.syndromes),
-        observable_flips=_verified_observable_flips(eval_set, eval_dir, profile),
+        observable_flips=_verified_observable_flips(eval_set, eval_dir),
         dem=dem_mass_split(read_dem_mechanisms(dem)),
         baselines=compare_baselines(
             eval_set,

@@ -2,9 +2,9 @@
 
 A training or evaluation point is identified by ``(operation, distance,
 rounds, error_prob)``.  This module owns that record and the rules that
-resolve it from a committed artifact: the manifest beside a circuit, an
-evaluation set's own manifest, or the circuit an evaluation set was sampled
-from.
+resolve it from a committed artifact: a circuit declares its key in the
+manifest beside it, and a frozen evaluation set inherits the key of the
+circuit it is bound to by that circuit's bytes.
 
 The identity answers *which experiment* a point is on.  It says nothing about
 how the circuit is built, how the shots are turned into graphs, or which
@@ -14,6 +14,7 @@ comparing an operation name to a literal.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,9 +29,10 @@ __all__ = [
     "ExperimentKey",
     "circuit_key",
     "circuit_manifest_path",
-    "eval_set_operation",
+    "eval_set_key",
     "manifest_key",
     "read_circuit_manifest",
+    "read_manifest",
     "validate_operation_name",
     "write_circuit_manifest",
 ]
@@ -43,6 +45,9 @@ _MANIFEST_SUFFIX: Final[str] = ".manifest.json"
 # Fields every circuit manifest must declare: the experiment the circuit
 # belongs to.  Provenance fields are added by whichever generator wrote it.
 _KEY_FIELDS: Final[tuple[str, ...]] = ("operation", "distance", "rounds", "error_prob")
+
+# Fields that bind a frozen evaluation set to the bytes of its circuit.
+_EVAL_SET_BINDING_FIELDS: Final[tuple[str, ...]] = ("circuit_file", "circuit_sha256")
 
 
 def validate_operation_name(operation: str) -> None:
@@ -117,6 +122,39 @@ def circuit_manifest_path(circuit_path: Path) -> Path:
     return circuit_path.with_name(circuit_path.stem + _MANIFEST_SUFFIX)
 
 
+def read_manifest(manifest_path: Path) -> dict[str, Any]:
+    """Read a manifest: a JSON object.
+
+    Parameters
+    ----------
+    manifest_path : Path
+        Path to the manifest file.
+
+    Returns
+    -------
+    dict
+        Manifest contents.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    ValueError
+        If the file is not valid JSON or holds anything but an object.
+    """
+    text = manifest_path.read_text(encoding="utf-8")
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest {manifest_path} is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(
+            f"Manifest {manifest_path} must be a JSON object, got "
+            f"{type(manifest).__name__}"
+        )
+    return manifest
+
+
 def read_circuit_manifest(circuit_path: Path) -> dict[str, Any]:
     """Read the manifest beside a circuit.
 
@@ -140,24 +178,12 @@ def read_circuit_manifest(circuit_path: Path) -> dict[str, Any]:
     """
     manifest_path = circuit_manifest_path(circuit_path)
     try:
-        text = manifest_path.read_text(encoding="utf-8")
+        return read_manifest(manifest_path)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Circuit {circuit_path} has no manifest at {manifest_path}; a circuit "
             f"declares its experiment through write_circuit_manifest"
         ) from exc
-    try:
-        manifest = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Circuit manifest {manifest_path} is not valid JSON: {exc}"
-        ) from exc
-    if not isinstance(manifest, dict):
-        raise ValueError(
-            f"Circuit manifest {manifest_path} must be a JSON object, got "
-            f"{type(manifest).__name__}"
-        )
-    return manifest
 
 
 def manifest_key(manifest: Mapping[str, Any], source: Path) -> ExperimentKey:
@@ -222,45 +248,73 @@ def circuit_key(circuit_path: Path) -> ExperimentKey:
     return manifest_key(manifest, circuit_manifest_path(circuit_path))
 
 
-def eval_set_operation(manifest: Mapping[str, Any], circuit_file: str | Path) -> str:
-    """Resolve the operation a frozen evaluation set belongs to.
+def eval_set_key(manifest: Mapping[str, Any], source: Path) -> ExperimentKey:
+    """Resolve the experiment key of a frozen evaluation set.
 
-    The set inherits the operation of the circuit its shots were sampled from.
-    A set that also declares one must agree with that circuit.
+    A set is bound to the circuit its shots were sampled from by that
+    circuit's bytes: its manifest names the circuit (``circuit_file``) and
+    records its ``circuit_sha256``, which the circuit must still hash to.  The
+    set inherits the circuit's key; every key field its manifest also records
+    must agree with it.
 
     Parameters
     ----------
     manifest : mapping
         Evaluation set manifest contents.
-    circuit_file : str or Path
-        Path to the circuit the shots were sampled from, as recorded in the
-        manifest.
+    source : Path
+        Path the manifest was read from, for error messages.
 
     Returns
     -------
-    str
+    ExperimentKey
+        The key of the set's circuit.
 
     Raises
     ------
     FileNotFoundError
-        If the circuit the set names carries no manifest.
+        If the circuit the set names, or that circuit's manifest, does not
+        exist.
     ValueError
-        If the set declares an operation the circuit does not belong to.
+        If the manifest lacks ``circuit_file`` or ``circuit_sha256``, if the
+        circuit's bytes do not hash to the recorded digest, or if a key field
+        the set records disagrees with its circuit's.
     """
-    circuit_path = Path(circuit_file)
-    from_circuit = circuit_key(circuit_path).operation
-
-    declared = manifest.get("operation")
-    if declared is None:
-        return from_circuit
-
-    validate_operation_name(declared)
-    if declared != from_circuit:
+    missing = [field for field in _EVAL_SET_BINDING_FIELDS if field not in manifest]
+    if missing:
         raise ValueError(
-            f"Eval set declares operation {declared!r} but its circuit "
-            f"{circuit_path} belongs to operation {from_circuit!r}"
+            f"Manifest {source} is missing required field(s) {missing}: a frozen "
+            f"set names the circuit it was sampled from and that circuit's sha256"
         )
-    return declared
+    circuit_path = Path(manifest["circuit_file"])
+    _verify_circuit_sha256(circuit_path, manifest["circuit_sha256"], source)
+    key = circuit_key(circuit_path)
+    disagreeing = {
+        field: manifest[field]
+        for field in _KEY_FIELDS
+        if field in manifest and manifest[field] != getattr(key, field)
+    }
+    if disagreeing:
+        raise ValueError(
+            f"Manifest {source} records {disagreeing}, but the circuit its shots "
+            f"were sampled from, {circuit_path}, is {key}"
+        )
+    return key
+
+
+def _verify_circuit_sha256(circuit_path: Path, recorded: str, source: Path) -> None:
+    """Require the circuit's bytes to hash to the digest the set recorded."""
+    try:
+        circuit_bytes = circuit_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Manifest {source} names circuit {circuit_path}, which does not exist"
+        ) from exc
+    actual = hashlib.sha256(circuit_bytes).hexdigest()
+    if actual != recorded:
+        raise ValueError(
+            f"Circuit {circuit_path} hashes to {actual}, but the set of {source} "
+            f"was sampled from bytes hashing to {recorded}"
+        )
 
 
 def write_circuit_manifest(

@@ -91,9 +91,19 @@ data/circuits/<operation>/
 ```
 data/eval/<operation>/
 └── d{distance}_p{error_prob}/
-    ├── data.npz          # syndromes, observables, detector_coords
-    └── manifest.json     # generator version, config hash, seed, shot count
+    ├── data.npz          # syndromes (N, D), observables (N, K), uint8
+    └── manifest.json     # circuit_file, circuit_sha256, seed, shot count, ...
 ```
+
+A frozen set holds shots and nothing else. Its manifest binds it to the
+circuit it was sampled from: `circuit_file` names the circuit and
+`circuit_sha256` its bytes, which the loader re-hashes and requires. The set
+inherits that circuit's experiment key, and every key field the set's manifest
+also records must agree with it. The `CircuitMetadata` its graphs are built
+from (coordinates, layout, DEM weights) is read from the circuit by the
+operation's extractor, the same one training uses. The `detector_coords`,
+`phase_ids`, `patch_ids` and `seam_mask` arrays some committed sets also store
+are not read; tests pin them to what the extractor reads.
 
 ### CI shards
 
@@ -101,9 +111,10 @@ data/eval/<operation>/
 data/ci_shard/<operation>/
 ├── syndromes.npy
 ├── observables.npy
-├── detector_coords.npy
 └── manifest.json
 ```
+
+A CI shard is a frozen set in `.npy` form and loads through the same rule.
 
 ## Module layout
 

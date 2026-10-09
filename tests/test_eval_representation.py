@@ -1,235 +1,190 @@
 """Tests for the representation-aware evaluation path.
 
-Verifies that EvalSet carries CircuitMetadata, that the loader reads phased
-metadata from npz files, that GNNDecoder rejects mismatched representations,
-and that the spatial path remains byte-identical.
+Verifies that a loaded eval set takes its metadata from its circuit through
+the operation's extractor, that the record refuses shots its metadata does
+not describe, and that GNNDecoder rejects mismatched representations.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
+import stim
 
 from decoders import GNNDecoder
 from evaluation.evaluator import EvalSet, load_eval_set
 from model.decoder import build_model
-from sampling.graph import CircuitMetadata, LogicalOperationLayout
+from sampling.experiment import circuit_key
+from sampling.graph import (
+    CircuitMetadata,
+    LogicalOperationLayout,
+    extract_circuit_metadata,
+)
 from sampling.profile import resolve_profile
 from sampling.representation import (
     PHASED,
     DataContract,
     LabelSpec,
 )
+from synthetic_eval_sets import MEMORY_D3, synthetic_eval_set
 
 
-CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
-EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "eval" / "memory"
-CIRCUIT_DIR = Path(__file__).resolve().parent.parent / "data" / "circuits" / "memory"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CI_SHARD_DIR = REPO_ROOT / "data" / "ci_shard" / "memory"
+FROZEN_SETS = sorted(
+    [
+        *(REPO_ROOT / "data/eval").glob("*/*/"),
+        *(REPO_ROOT / "data/ci_shard").glob("*/"),
+    ],
+    key=str,
+)
 
 
-class TestEvalSetCircuitMetadata:
-    """EvalSet builds CircuitMetadata at construction."""
+def _frozen_arrays(frozen_dir: Path) -> dict[str, np.ndarray]:
+    """Every array a frozen set or CI shard stored, by name."""
+    if (frozen_dir / "data.npz").exists():
+        with np.load(frozen_dir / "data.npz") as archive:
+            return dict(archive)
+    return {path.stem: np.load(path) for path in frozen_dir.glob("*.npy")}
 
-    def test_spatial_eval_set_has_metadata(self) -> None:
-        rng = np.random.default_rng(42)
-        n, n_det = 100, 10
-        coords = rng.random((n_det, 3))
 
-        es = EvalSet(
-            syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=coords,
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-            num_shots=n,
-            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-            manifest={
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            },
+def _ci_shard_copy(tmp_path: Path) -> Path:
+    """A writable copy of the CI shard, still bound to the committed circuit."""
+    copy = tmp_path / "memory"
+    shutil.copytree(CI_SHARD_DIR, copy)
+    return copy
+
+
+class TestLoadedMetadataComesFromTheCircuit:
+    @pytest.mark.parametrize(
+        "frozen_dir", FROZEN_SETS, ids=lambda path: f"{path.parent.name}/{path.name}"
+    )
+    def test_committed_set_loads_the_metadata_it_froze(self, frozen_dir: Path) -> None:
+        """The circuit's metadata equals what generation stored beside the shots."""
+        eval_set = load_eval_set(frozen_dir)
+        frozen = _frozen_arrays(frozen_dir)
+        metadata = eval_set.circuit_metadata
+        profile = resolve_profile(eval_set.operation)
+
+        assert eval_set.key == circuit_key(eval_set.circuit_file)
+        assert eval_set.observable_names == profile.observable_names
+        assert metadata.num_detectors == frozen["syndromes"].shape[1]
+        np.testing.assert_array_equal(
+            metadata.detector_coords, frozen["detector_coords"], strict=True
+        )
+        if "phase_ids" not in frozen:
+            assert metadata.layout is None
+            return
+        assert metadata.layout is not None
+        for name in ("phase_ids", "patch_ids", "seam_mask"):
+            np.testing.assert_array_equal(
+                getattr(metadata.layout, name), frozen[name], strict=True
+            )
+        manifest = json.loads((frozen_dir / "manifest.json").read_text())
+        assert metadata.layout.phase_names == tuple(manifest["phase_names"])
+
+    def test_metadata_arrays_stored_beside_the_shots_are_not_read(
+        self, tmp_path: Path
+    ) -> None:
+        shard = _ci_shard_copy(tmp_path)
+        np.save(shard / "detector_coords.npy", np.full((24, 3), np.nan))
+
+        loaded = load_eval_set(shard).circuit_metadata
+
+        np.testing.assert_array_equal(
+            loaded.detector_coords,
+            load_eval_set(CI_SHARD_DIR).circuit_metadata.detector_coords,
         )
 
-        assert isinstance(es.circuit_metadata, CircuitMetadata)
-        assert es.circuit_metadata.distance == 3
-        assert es.circuit_metadata.rounds == 3
-        assert es.circuit_metadata.num_detectors == n_det
-        np.testing.assert_array_equal(es.circuit_metadata.detector_coords, coords)
-        assert es.circuit_metadata.layout is None
+    def test_dem_weights_come_from_the_circuit(self) -> None:
+        eval_set = load_eval_set(CI_SHARD_DIR)
+        circuit = stim.Circuit.from_file(eval_set.circuit_file)
+        expected = extract_circuit_metadata(circuit, distance=3, rounds=3)
 
-    def test_phased_eval_set_has_metadata(self) -> None:
-        rng = np.random.default_rng(42)
-        n, n_det = 100, 10
-        coords = rng.random((n_det, 3))
-        phase_ids = np.zeros(n_det, dtype=np.intp)
-        phase_ids[5:] = 1
-        patch_ids = np.zeros(n_det, dtype=np.intp)
-        patch_ids[5:] = 1
-        seam_mask = np.zeros(n_det, dtype=np.bool_)
-        seam_mask[4:6] = True
-        phase_names = ("memory", "merge")
-
-        es = EvalSet(
-            syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=coords,
-            distance=3,
-            rounds=3,
-            error_prob=0.01,
-            num_shots=n,
-            circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-            manifest={
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            },
-            layout=LogicalOperationLayout(
-                phase_ids=phase_ids,
-                phase_names=phase_names,
-                patch_ids=patch_ids,
-                seam_mask=seam_mask,
-            ),
+        assert expected.dem_edge_weights.any()
+        np.testing.assert_array_equal(
+            eval_set.circuit_metadata.dem_edge_weights,
+            expected.dem_edge_weights,
+            strict=True,
         )
 
-        assert es.circuit_metadata.layout is not None
-        np.testing.assert_array_equal(es.circuit_metadata.layout.phase_ids, phase_ids)
-        assert es.circuit_metadata.layout.phase_names == phase_names
-        np.testing.assert_array_equal(es.circuit_metadata.layout.patch_ids, patch_ids)
-        np.testing.assert_array_equal(es.circuit_metadata.layout.seam_mask, seam_mask)
+    def test_missing_circuit_raises_naming_set_and_circuit(
+        self, tmp_path: Path
+    ) -> None:
+        shard = _ci_shard_copy(tmp_path)
+        manifest = json.loads((shard / "manifest.json").read_text())
+        manifest["circuit_file"] = "data/circuits/memory/no_such_circuit.stim"
+        (shard / "manifest.json").write_text(json.dumps(manifest))
 
-    def test_ci_shard_metadata_matches(self) -> None:
-        """CI shard's circuit_metadata matches hand-built metadata."""
-        if not (CI_SHARD_DIR / "manifest.json").exists():
-            pytest.skip("CI shard not found")
+        with pytest.raises(FileNotFoundError, match=f"{shard}.*no_such_circuit"):
+            load_eval_set(shard)
 
-        es = load_eval_set(CI_SHARD_DIR)
-        md = es.circuit_metadata
+    def test_detector_count_mismatch_raises_naming_set_and_circuit(
+        self, tmp_path: Path
+    ) -> None:
+        shard = _ci_shard_copy(tmp_path)
+        np.save(shard / "syndromes.npy", np.load(shard / "syndromes.npy")[:, :-1])
 
-        assert md.distance == es.distance
-        assert md.rounds == es.rounds
-        assert md.num_detectors == es.syndromes.shape[1]
-        np.testing.assert_array_equal(md.detector_coords, es.detector_coords)
-        assert md.layout is None
+        with pytest.raises(
+            ValueError, match=f"{shard}.*d3_r3_p0_01.stim.*23 detectors.*24"
+        ):
+            load_eval_set(shard)
+
+    def test_shots_without_any_array_raise_naming_the_set(self, tmp_path: Path) -> None:
+        shard = _ci_shard_copy(tmp_path)
+        (shard / "observables.npy").unlink()
+
+        with pytest.raises(FileNotFoundError, match=f"{shard} holds neither"):
+            load_eval_set(shard)
 
 
-# load_eval_set reads phased metadata from npz
-
-
-class TestLoadEvalSetPhasedMetadata:
-    """Loader reads phased arrays from npz and validates representation."""
-
-    def test_loads_phased_npz(self, tmp_path: Path) -> None:
-        n, n_det = 50, 8
-        rng = np.random.default_rng(99)
-        syndromes = rng.integers(0, 2, size=(n, n_det), dtype=np.uint8)
-        observables = rng.integers(0, 2, size=(n, 1), dtype=np.uint8)
-        coords = rng.random((n_det, 3))
-        phase_ids = np.array([0, 0, 0, 0, 1, 1, 2, 2], dtype=np.intp)
-        patch_ids = np.array([0, 0, 0, 0, 0, 0, 1, 1], dtype=np.intp)
-        seam_mask = np.array(
-            [False, False, False, True, True, False, False, False], dtype=np.bool_
+class TestEvalSetRefusesShotsItsMetadataDoesNotDescribe:
+    @pytest.fixture
+    def eval_set(self) -> EvalSet:
+        return synthetic_eval_set(
+            np.zeros((4, 6), dtype=np.uint8),
+            np.zeros((4, 1), dtype=np.uint8),
+            key=MEMORY_D3,
+            observable_names=("logical_observable",),
         )
 
-        np.savez_compressed(
-            tmp_path / "data.npz",
-            syndromes=syndromes,
-            observables=observables,
-            detector_coords=coords,
-            phase_ids=phase_ids,
-            patch_ids=patch_ids,
-            seam_mask=seam_mask,
-        )
-        manifest = {
-            "distance": 3,
-            "rounds": 5,
-            "error_prob": 0.005,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            "representation_version": "phased",
-            "observable_names": ["logical_observable"],
-            "phase_names": ["memory", "merge", "split"],
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    def test_non_uint8_shots_raise(self, eval_set: EvalSet) -> None:
+        with pytest.raises(ValueError, match="syndromes must be a 2-D uint8"):
+            replace(eval_set, syndromes=eval_set.syndromes.astype(np.float32))
 
-        es = load_eval_set(tmp_path)
-        assert es.circuit_metadata.layout is not None
-        np.testing.assert_array_equal(es.circuit_metadata.layout.phase_ids, phase_ids)
-        assert es.circuit_metadata.layout.phase_names == ("memory", "merge", "split")
-        np.testing.assert_array_equal(es.circuit_metadata.layout.patch_ids, patch_ids)
-        np.testing.assert_array_equal(es.circuit_metadata.layout.seam_mask, seam_mask)
+    def test_one_dimensional_observables_raise(self, eval_set: EvalSet) -> None:
+        with pytest.raises(ValueError, match="observables must be a 2-D uint8"):
+            replace(eval_set, observables=eval_set.observables[:, 0])
 
-    def test_spatial_npz_has_no_phased_fields(self, tmp_path: Path) -> None:
-        """A spatial eval set loads without phased arrays."""
-        n, n_det = 20, 4
-        rng = np.random.default_rng(7)
-        np.savez_compressed(
-            tmp_path / "data.npz",
-            syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=rng.random((n_det, 3)),
-        )
-        manifest = {
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    def test_no_shots_raise(self, eval_set: EvalSet) -> None:
+        with pytest.raises(ValueError, match="N >= 1"):
+            replace(
+                eval_set,
+                syndromes=eval_set.syndromes[:0],
+                observables=eval_set.observables[:0],
+            )
 
-        es = load_eval_set(tmp_path)
-        assert es.circuit_metadata.layout is None
+    def test_shot_counts_disagreeing_raise(self, eval_set: EvalSet) -> None:
+        with pytest.raises(ValueError, match="4 shot.*3"):
+            replace(eval_set, observables=eval_set.observables[:3])
 
-    def test_rejects_phased_representation_without_data(self, tmp_path: Path) -> None:
-        """A manifest declaring phased representation but no phased arrays raises."""
-        n, n_det = 20, 4
-        rng = np.random.default_rng(7)
-        np.savez_compressed(
-            tmp_path / "data.npz",
-            syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=rng.random((n_det, 3)),
-        )
-        manifest = {
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            "representation_version": "phased",
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    def test_observable_names_disagreeing_with_columns_raise(
+        self, eval_set: EvalSet
+    ) -> None:
+        with pytest.raises(ValueError, match="1 observable.*'Z_0', 'Z_1'"):
+            replace(eval_set, observable_names=("Z_0", "Z_1"))
 
-        with pytest.raises(ValueError, match="lacks the phased metadata"):
-            load_eval_set(tmp_path)
-
-    def test_rejects_phase_ids_without_phase_names(self, tmp_path: Path) -> None:
-        """Phase arrays in npz but no phase_names in manifest raises."""
-        n, n_det = 20, 4
-        rng = np.random.default_rng(7)
-        np.savez_compressed(
-            tmp_path / "data.npz",
-            syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-            observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-            detector_coords=rng.random((n_det, 3)),
-            phase_ids=np.zeros(n_det, dtype=np.intp),
-            patch_ids=np.zeros(n_det, dtype=np.intp),
-            seam_mask=np.zeros(n_det, dtype=np.bool_),
-        )
-        manifest = {
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-
-        with pytest.raises(ValueError, match="phase_names"):
-            load_eval_set(tmp_path)
+    def test_metadata_at_another_distance_raises(self, eval_set: EvalSet) -> None:
+        with pytest.raises(ValueError, match=r"\(5, 3\)"):
+            replace(
+                eval_set,
+                circuit_metadata=replace(eval_set.circuit_metadata, distance=5),
+            )
 
 
 class TestGNNDecoderRepresentationValidation:
@@ -329,73 +284,3 @@ class TestGNNDecoderRepresentationValidation:
             contract=resolve_profile("memory").data_contract,
         )
         assert decoder.name == "gnn"
-
-
-class TestSpatialPathIdentity:
-    """The spatial path produces identical results with circuit_metadata."""
-
-    def test_ci_shard_gnn_decode_unchanged(self) -> None:
-        """GNN decode on CI shard via circuit_metadata matches direct metadata."""
-        if not (CI_SHARD_DIR / "manifest.json").exists():
-            pytest.skip("CI shard not found")
-
-        es = load_eval_set(CI_SHARD_DIR)
-
-        # Build metadata the old way (hand-constructed)
-        n_det = es.syndromes.shape[1]
-        old_metadata = CircuitMetadata(
-            detector_coords=es.detector_coords,
-            distance=es.distance,
-            rounds=es.rounds,
-            num_detectors=n_det,
-            dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
-        )
-
-        model = build_model(
-            hidden_dim=32,
-            num_layers=2,
-            dropout=0.0,
-            node_dim=6,
-            edge_dim=6,
-            num_observables=1,
-        )
-        torch.manual_seed(0)
-
-        decoder_old = GNNDecoder.from_metadata(
-            model=model,
-            metadata=old_metadata,
-            threshold=0.0,
-            device=torch.device("cpu"),
-            batch_size=64,
-            contract=resolve_profile("memory").data_contract,
-        )
-        result_old = decoder_old.decode_batch(es.syndromes[:20])
-
-        decoder_new = GNNDecoder.from_metadata(
-            model=model,
-            metadata=es.circuit_metadata,
-            threshold=0.0,
-            device=torch.device("cpu"),
-            batch_size=64,
-            contract=resolve_profile("memory").data_contract,
-        )
-        result_new = decoder_new.decode_batch(es.syndromes[:20])
-
-        np.testing.assert_array_equal(result_old, result_new)
-
-
-# generate_eval_sets stores representation metadata
-
-
-class TestEvalSetManifestRepresentation:
-    """Eval set manifests carry representation_version and observable_names."""
-
-    def test_existing_memory_manifest_loads_as_spatial(self) -> None:
-        """An existing memory eval set (no representation_version) defaults spatial."""
-        sample_dir = EVAL_DIR / "d3_p0_0100"
-        if not sample_dir.exists():
-            pytest.skip("Eval set d3_p0_0100 not found")
-
-        es = load_eval_set(sample_dir)
-        assert es.manifest.get("representation_version", "spatial") == "spatial"
-        assert es.circuit_metadata.layout is None

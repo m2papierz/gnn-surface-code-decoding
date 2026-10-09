@@ -5,7 +5,6 @@ space-time convention, and observable names on EvalSet.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 
@@ -15,14 +14,10 @@ from evaluation.evaluator import (
     EvalSet,
     _point_to_dict,
     evaluate_point,
-    load_eval_set,
 )
 from evaluation.stats import WilsonInterval
 from sampling.profile import MetricPolicy
-
-
-CI_SHARD_DIR = Path(__file__).resolve().parent.parent / "data" / "ci_shard" / "memory"
-EVAL_DIR = Path(__file__).resolve().parent.parent / "data" / "eval" / "memory"
+from synthetic_eval_sets import MEMORY_D3, synthetic_eval_set
 
 
 class _FakeDecoder:
@@ -55,24 +50,12 @@ def _make_eval_set(
     rng = np.random.default_rng(seed)
     syndromes = rng.integers(0, 2, size=(n, n_det), dtype=np.uint8)
     observables = rng.integers(0, 2, size=(n, n_obs), dtype=np.uint8)
-    coords = rng.random((n_det, 3))
 
-    return EvalSet(
-        syndromes=syndromes,
-        observables=observables,
-        detector_coords=coords,
-        distance=3,
-        rounds=3,
-        error_prob=0.01,
-        num_shots=n,
-        circuit_file="data/circuits/memory/d3_r3_p0_01.stim",
-        manifest={
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-        },
-        observable_names=observable_names,
+    return synthetic_eval_set(
+        syndromes,
+        observables,
+        key=MEMORY_D3,
+        observable_names=observable_names or tuple(f"O_{i}" for i in range(n_obs)),
     )
 
 
@@ -223,25 +206,6 @@ class TestPerObservableBreakdown:
         assert len(dr.per_observable) == 1
         assert dr.per_observable[0].n_errors == dr.n_errors
 
-    def test_default_observable_names_when_none(self) -> None:
-        n, n_det, n_obs = 200, 10, 3
-        es = _make_eval_set(n, n_det, n_obs, observable_names=None)
-        preds = np.zeros((n, n_obs), dtype=np.uint8)
-        decoders = {
-            "a": _FakeDecoder(preds, name="a"),
-            "b": _FakeDecoder(preds, name="b"),
-        }
-
-        result = evaluate_point(
-            es,
-            decoders,
-            reference_decoder="a",
-            check_interval=n,
-        )
-
-        names = [obs.name for obs in result.decoder_results["a"].per_observable]
-        assert names == ["observable_0", "observable_1", "observable_2"]
-
     def test_per_observable_serialized(self) -> None:
         n, n_det, n_obs = 200, 10, 2
         es = _make_eval_set(
@@ -375,43 +339,6 @@ class TestSpaceTimeConvention:
 
 
 class TestObservableNamesOnEvalSet:
-    def test_manifest_with_observable_names(self, tmp_path: Path) -> None:
-        manifest = {
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-            "observable_names": ["logical_observable"],
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-        np.savez(
-            tmp_path / "data.npz",
-            syndromes=np.zeros((10, 24), dtype=np.uint8),
-            observables=np.zeros((10, 1), dtype=np.uint8),
-            detector_coords=np.zeros((24, 3)),
-        )
-
-        es = load_eval_set(tmp_path)
-        assert es.observable_names == ("logical_observable",)
-
-    def test_manifest_without_observable_names(self, tmp_path: Path) -> None:
-        manifest = {
-            "distance": 3,
-            "rounds": 3,
-            "error_prob": 0.01,
-            "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-        np.savez(
-            tmp_path / "data.npz",
-            syndromes=np.zeros((10, 24), dtype=np.uint8),
-            observables=np.zeros((10, 1), dtype=np.uint8),
-            detector_coords=np.zeros((24, 3)),
-        )
-
-        es = load_eval_set(tmp_path)
-        assert es.observable_names is None
-
     def test_observable_names_in_serialized_result(self) -> None:
         n, n_det, n_obs = 200, 10, 2
         es = _make_eval_set(

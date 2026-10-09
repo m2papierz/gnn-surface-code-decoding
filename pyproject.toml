@@ -41,7 +41,7 @@ explicit = true
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-src = ["src", "scripts"]
+src = ["src", "scripts", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

@@ -18,15 +18,15 @@ import stim
 
 from evaluation.evaluator import (
     EvalReport,
-    EvalSet,
     discover_eval_sets,
     evaluate_point,
     load_eval_set,
 )
 from sampling.experiment import (
     ExperimentKey,
+    circuit_key,
     circuit_manifest_path,
-    eval_set_operation,
+    eval_set_key,
     read_circuit_manifest,
     validate_operation_name,
     write_circuit_manifest,
@@ -71,21 +71,10 @@ def _write_circuit(directory: Path, name: str, distance: int) -> Path:
     return path
 
 
-def _synthetic_eval_set(circuit_file: str, manifest: dict) -> EvalSet:
-    """A tiny eval set carrying the given circuit reference and manifest."""
-    rng = np.random.default_rng(0)
-    n, n_det = 40, 10
-    return EvalSet(
-        syndromes=rng.integers(0, 2, size=(n, n_det), dtype=np.uint8),
-        observables=rng.integers(0, 2, size=(n, 1), dtype=np.uint8),
-        detector_coords=rng.random((n_det, 3)),
-        distance=3,
-        rounds=3,
-        error_prob=0.01,
-        num_shots=n,
-        circuit_file=circuit_file,
-        manifest=manifest,
-    )
+def _bound_to(circuit_file: str) -> dict[str, str]:
+    """Manifest fields binding a set to ``circuit_file`` as it is committed."""
+    digest = hashlib.sha256(Path(circuit_file).read_bytes()).hexdigest()
+    return {"circuit_file": circuit_file, "circuit_sha256": digest}
 
 
 class TestExperimentKey:
@@ -361,7 +350,7 @@ class TestArtifactRoots:
         assert discover_eval_sets(EVAL_DIR)
 
 
-class TestEvalSetOperation:
+class TestEvalSetKey:
     def test_committed_eval_set_resolves_without_declaring(self) -> None:
         eval_dir = EVAL_DIR / "d3_p0_0100"
         if not eval_dir.exists():
@@ -375,37 +364,53 @@ class TestEvalSetOperation:
         assert "operation" not in eval_set.manifest
         assert eval_set.operation == "memory"
 
-    def test_declared_operation_is_used_when_it_agrees(self) -> None:
-        assert eval_set_operation({"operation": "memory"}, _MEMORY_CIRCUIT) == "memory"
+    def test_declared_key_fields_are_kept_when_they_agree(self) -> None:
+        manifest = {
+            **_bound_to(_MEMORY_CIRCUIT),
+            "operation": "memory",
+            "distance": 3,
+            "rounds": 3,
+            "error_prob": 0.01,
+        }
+        assert eval_set_key(manifest, Path("manifest.json")) == circuit_key(
+            Path(_MEMORY_CIRCUIT)
+        )
 
-    def test_declared_operation_disagreeing_with_its_circuit_raises(self) -> None:
-        with pytest.raises(ValueError, match="zz_merge_split"):
-            eval_set_operation({"operation": "zz_merge_split"}, _MEMORY_CIRCUIT)
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("operation", "zz_merge_split"), ("distance", 5), ("error_prob", 0.02)],
+    )
+    def test_key_field_disagreeing_with_its_circuit_raises(
+        self, field: str, value: object
+    ) -> None:
+        manifest = {**_bound_to(_MEMORY_CIRCUIT), field: value}
+        with pytest.raises(ValueError, match=f"'{field}': {value!r}.*d3_r3_p0_01"):
+            eval_set_key(manifest, Path("manifest.json"))
 
-    def test_unreachable_circuit_raises(self) -> None:
-        with pytest.raises(FileNotFoundError, match="no_such_circuit"):
-            eval_set_operation({}, "data/circuits/no_such_circuit.stim")
+    @pytest.mark.parametrize("field", ["circuit_file", "circuit_sha256"])
+    def test_unbound_set_raises_naming_the_field(self, field: str) -> None:
+        manifest = _bound_to(_MEMORY_CIRCUIT)
+        del manifest[field]
+        with pytest.raises(ValueError, match=f"missing required field.*{field}"):
+            eval_set_key(manifest, Path("manifest.json"))
 
-    def test_resolved_once_at_construction(self) -> None:
-        """A set whose identity cannot be established fails before any decode."""
-        with pytest.raises(FileNotFoundError, match="no_such_circuit"):
-            _synthetic_eval_set(
-                "data/circuits/no_such_circuit.stim",
-                {"distance": 3, "rounds": 3, "error_prob": 0.01},
-            )
+    def test_circuit_with_other_bytes_raises(self) -> None:
+        manifest = {**_bound_to(_MEMORY_CIRCUIT), "circuit_sha256": "0" * 64}
+        with pytest.raises(ValueError, match="hashes to"):
+            eval_set_key(manifest, Path("manifest.json"))
+
+    def test_unreachable_circuit_raises_naming_set_and_circuit(self) -> None:
+        manifest = {
+            "circuit_file": "data/circuits/no_such_circuit.stim",
+            "circuit_sha256": "0" * 64,
+        }
+        with pytest.raises(FileNotFoundError, match="set/manifest.json.*no_such"):
+            eval_set_key(manifest, Path("set/manifest.json"))
 
 
 class TestResultsCarryTheOperation:
     def test_point_result_carries_the_key(self) -> None:
-        eval_set = _synthetic_eval_set(
-            _MEMORY_CIRCUIT,
-            {
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": _MEMORY_CIRCUIT,
-            },
-        )
+        eval_set = load_eval_set(CI_SHARD_DIR)
         result = evaluate_point(
             eval_set,
             {"a": ZeroDecoder("a"), "b": ZeroDecoder("b")},
@@ -418,15 +423,7 @@ class TestResultsCarryTheOperation:
         assert result.operation == "memory"
 
     def test_serialized_report_carries_the_operation(self) -> None:
-        eval_set = _synthetic_eval_set(
-            _MEMORY_CIRCUIT,
-            {
-                "distance": 3,
-                "rounds": 3,
-                "error_prob": 0.01,
-                "circuit_file": _MEMORY_CIRCUIT,
-            },
-        )
+        eval_set = load_eval_set(CI_SHARD_DIR)
         result = evaluate_point(
             eval_set,
             {"a": ZeroDecoder("a"), "b": ZeroDecoder("b")},

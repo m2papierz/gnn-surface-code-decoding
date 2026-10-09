@@ -231,6 +231,7 @@ class TestRegistryRoundTrip:
                     mcnemar=mr,
                 ),
                 outcome=EvalOutcome.RESOLVED_DIFFERENT,
+                observable_names=profile.observable_names,
             )
             row = _point_to_dict(result)
             assert row["operation"] == profile.operation

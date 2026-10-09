@@ -392,8 +392,8 @@ def compare_baselines(
     compared : Decoder
         Decoder compared against the reference.
     profile : OperationProfile
-        Profile of the set's operation: observable names, metric policy and
-        space-time convention.
+        Profile of the set's operation: metric policy and space-time
+        convention.
 
     Returns
     -------
@@ -405,7 +405,6 @@ def compare_baselines(
         reference_decoder=reference.name,
         check_interval=eval_set.num_shots,
         metric_policy=profile.metric_policy,
-        observable_names=profile.observable_names,
     )
     return BaselineComparison(
         reference=scored.decoder_results[reference.name],

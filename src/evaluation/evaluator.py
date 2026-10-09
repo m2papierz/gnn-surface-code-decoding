@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Final
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,86 +33,115 @@ from evaluation.stats import (
     per_round_ler,
     wilson_interval,
 )
-from sampling.experiment import ExperimentKey, eval_set_operation
-from sampling.graph import CircuitMetadata, LogicalOperationLayout
-from sampling.profile import MetricPolicy
+from sampling.experiment import ExperimentKey, eval_set_key, read_manifest
+from sampling.graph import CircuitMetadata
+from sampling.profile import MetricPolicy, resolve_profile
 
 
 logger = logging.getLogger(__name__)
 
 
+_MANIFEST_NAME: Final[str] = "manifest.json"
+
+
 @dataclass(frozen=True, slots=True)
 class EvalSet:
-    """Frozen evaluation set loaded from disk.
+    """Frozen evaluation shots, bound to the committed circuit they came from.
 
     Parameters
     ----------
+    key : ExperimentKey
+        Identity of the point: the key of the set's circuit.
     syndromes : ndarray, shape ``(N, D)``, uint8
-        Binary syndrome vectors.
-    observables : ndarray, shape ``(N, O)``, uint8
-        True logical observable flips.
-    detector_coords : ndarray, shape ``(D, 3)``, float64
-        Detector (x, y, t) coordinates.
-    distance : int
-        Code distance.
-    rounds : int
-        Syndrome measurement rounds.
-    error_prob : float
-        Physical error probability.
-    num_shots : int
-        Total available shots.
-    circuit_file : str
-        Relative path to source circuit file.
-    manifest : dict
-        Full manifest contents.
-    layout : LogicalOperationLayout or None
-        Phase, patch and seam structure.  ``None`` for spatial-only sets.
-    operation : str
-        Operation this set belongs to.  Resolved at construction from the
-        manifest when it declares one, otherwise from the circuit the shots
-        were sampled from.
+        Detection events of each shot, ``N >= 1``.
+    observables : ndarray, shape ``(N, K)``, uint8
+        True logical observable flips of each shot.
+    observable_names : tuple of str, length ``K``
+        The operation's ordered observable names.
+    circuit_file : Path
+        Circuit the shots were sampled from.
+    circuit_sha256 : str
+        Digest of the circuit's bytes, verified at load.
     circuit_metadata : CircuitMetadata
-        Pre-built metadata for graph construction.  Consumers use this
-        instead of extracting their own from the circuit.
+        Metadata the operation's extractor read from the circuit; every
+        consumer builds graphs from it.
+    manifest : mapping
+        The set's manifest as written by its generator.
+
+    Raises
+    ------
+    ValueError
+        If the shot arrays are not 2-D uint8 over the same ``N >= 1`` shots,
+        or disagree with the metadata's detector count, the observable names
+        or the key's distance and rounds.
     """
 
+    key: ExperimentKey
     syndromes: NDArray[np.uint8]
     observables: NDArray[np.uint8]
-    detector_coords: np.ndarray
-    distance: int
-    rounds: int
-    error_prob: float
-    num_shots: int
-    circuit_file: str
-    manifest: dict
-    layout: LogicalOperationLayout | None = None
-    observable_names: tuple[str, ...] | None = None
-    dem_edge_weights: np.ndarray | None = None
-    operation: str = field(init=False)
-    circuit_metadata: CircuitMetadata = field(init=False)
+    observable_names: tuple[str, ...]
+    circuit_file: Path
+    circuit_sha256: str
+    circuit_metadata: CircuitMetadata
+    manifest: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "operation", eval_set_operation(self.manifest, self.circuit_file)
-        )
-        n_det = self.syndromes.shape[1]
-        dem_w = (
-            self.dem_edge_weights
-            if self.dem_edge_weights is not None
-            else np.zeros((n_det, n_det), dtype=np.float64)
-        )
-        object.__setattr__(
-            self,
-            "circuit_metadata",
-            CircuitMetadata(
-                detector_coords=self.detector_coords,
-                distance=self.distance,
-                rounds=self.rounds,
-                num_detectors=n_det,
-                dem_edge_weights=dem_w,
-                layout=self.layout,
-            ),
-        )
+        for name, shots in (
+            ("syndromes", self.syndromes),
+            ("observables", self.observables),
+        ):
+            if shots.ndim != 2 or shots.dtype != np.uint8:
+                raise ValueError(
+                    f"{name} must be a 2-D uint8 array, got {shots.ndim}-D "
+                    f"{shots.dtype}"
+                )
+        num_shots, num_detectors = self.syndromes.shape
+        if num_shots == 0 or self.observables.shape[0] != num_shots:
+            raise ValueError(
+                f"syndromes hold {num_shots} shot(s) and observables "
+                f"{self.observables.shape[0]}; a frozen set holds the same N >= 1"
+            )
+        if num_detectors != self.circuit_metadata.num_detectors:
+            raise ValueError(
+                f"shots carry {num_detectors} detectors, but the circuit has "
+                f"{self.circuit_metadata.num_detectors}"
+            )
+        if self.observables.shape[1] != len(self.observable_names):
+            raise ValueError(
+                f"shots carry {self.observables.shape[1]} observable(s), but "
+                f"{self.key.operation} names {list(self.observable_names)}"
+            )
+        metadata_dr = (self.circuit_metadata.distance, self.circuit_metadata.rounds)
+        if metadata_dr != (self.key.distance, self.key.rounds):
+            raise ValueError(
+                f"circuit metadata is at (d, r) = {metadata_dr}, but the set is "
+                f"{self.key}"
+            )
+
+    @property
+    def operation(self) -> str:
+        """Logical operation the set's circuit realizes."""
+        return self.key.operation
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self.key.distance
+
+    @property
+    def rounds(self) -> int:
+        """Syndrome measurement rounds."""
+        return self.key.rounds
+
+    @property
+    def error_prob(self) -> float:
+        """Physical error probability."""
+        return self.key.error_prob
+
+    @property
+    def num_shots(self) -> int:
+        """Shots the set holds."""
+        return self.syndromes.shape[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,13 +226,12 @@ class EvalPointResult:
         Final stopping decision.
     outcome : EvalOutcome
         Final evaluation outcome for this point.
+    observable_names : tuple of str
+        Ordered observable names of the point's operation.
     metric_policy : MetricPolicy or None
         Metric policy from the operation's profile.  Controls which metrics
         the serializer emits.  ``None`` for backward compatibility with
         callers that predate the profile registry.
-    observable_names : tuple of str or None
-        Ordered observable names from the profile.  ``None`` when not
-        available (legacy eval sets without profile metadata).
     space_time_convention : str or None
         Label for the space-time accounting convention.  Required on every
         result artifact so a table cannot exist without stating which
@@ -214,8 +244,8 @@ class EvalPointResult:
     mcnemar_results: dict[str, McNemarResult]
     stopping: StoppingDecision
     outcome: EvalOutcome
+    observable_names: tuple[str, ...]
     metric_policy: MetricPolicy | None = None
-    observable_names: tuple[str, ...] | None = None
     space_time_convention: str | None = None
 
     @property
@@ -268,14 +298,14 @@ class EvalReport:
 
 
 def load_eval_set(eval_dir: Path) -> EvalSet:
-    """Load a frozen evaluation set from a directory.
+    """Load a frozen evaluation set, bound to the circuit it was sampled from.
 
-    Supports two formats:
-    - Compressed npz (``data.npz`` with keys: syndromes, observables,
-      detector_coords, and optionally phase_ids/patch_ids/seam_mask for
-      phased representations) + ``manifest.json``
-    - Individual npy files (``syndromes.npy``, ``observables.npy``,
-      ``detector_coords.npy``) + ``manifest.json``
+    The directory holds ``manifest.json`` and the shots: ``syndromes`` and
+    ``observables`` in ``data.npz``, or as ``syndromes.npy`` and
+    ``observables.npy``.  Everything else comes from the set's circuit, which
+    must hash to the digest the manifest recorded: the key it declares, and
+    the metadata its operation's extractor reads from it.  Any other arrays a
+    set stored at generation are not read.
 
     Parameters
     ----------
@@ -289,108 +319,64 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
     Raises
     ------
     FileNotFoundError
-        If required files are missing, or if the circuit the set names cannot
-        be reached to resolve its operation.
+        If the manifest, the shots, the circuit or the circuit's manifest is
+        missing.
     ValueError
-        If manifest is missing required fields, shapes mismatch, the set
-        declares an operation its circuit does not belong to, or the manifest
-        declares a representation whose metadata is not present.
+        If the set is not bound to its circuit (see
+        ``sampling.experiment.eval_set_key``), its operation is not
+        registered, its circuit is refused by the operation's extractor, or
+        its shots disagree with the circuit; the message names the set.
     """
-    manifest_path = eval_dir / "manifest.json"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"No manifest.json in eval set directory: {eval_dir}")
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-    layout: LogicalOperationLayout | None = None
-
-    npz_path = eval_dir / "data.npz"
-    if npz_path.exists():
-        data = np.load(npz_path)
-        syndromes = data["syndromes"].astype(np.uint8, copy=False)
-        observables = data["observables"].astype(np.uint8, copy=False)
-        detector_coords = data["detector_coords"].astype(np.float64, copy=False)
-
-        if "phase_ids" in data:
-            raw_names = manifest.get("phase_names")
-            if raw_names is None:
-                raise ValueError(
-                    f"Eval set {eval_dir} has phase_ids in data but manifest "
-                    f"lacks phase_names"
-                )
-            layout = LogicalOperationLayout(
-                phase_ids=data["phase_ids"].astype(np.intp, copy=False),
-                phase_names=tuple(raw_names),
-                patch_ids=data["patch_ids"].astype(np.intp, copy=False),
-                seam_mask=data["seam_mask"].astype(np.bool_, copy=False),
-            )
-    else:
-        syn_path = eval_dir / "syndromes.npy"
-        obs_path = eval_dir / "observables.npy"
-        coords_path = eval_dir / "detector_coords.npy"
-
-        if not syn_path.exists():
-            raise FileNotFoundError(f"No syndromes file in {eval_dir}")
-
-        syndromes = np.load(syn_path).astype(np.uint8, copy=False)
-        observables = np.load(obs_path).astype(np.uint8, copy=False)
-        detector_coords = np.load(coords_path).astype(np.float64, copy=False)
-
-    if observables.ndim == 1:
-        observables = observables[:, np.newaxis]
-
-    _required_fields = ["distance", "rounds", "error_prob", "circuit_file"]
-    for f in _required_fields:
-        if f not in manifest:
-            raise ValueError(f"Manifest missing required field '{f}': {manifest_path}")
-
-    # Validate: if the manifest declares a representation that needs phased
-    # metadata, the stored data must provide it.
-    rep_version = manifest.get("representation_version", "spatial")
-    if rep_version != "spatial" and layout is None:
-        raise ValueError(
-            f"Eval set {eval_dir} declares representation {rep_version!r} but "
-            f"lacks the phased metadata arrays (phase_ids, patch_ids, seam_mask) "
-            f"that representation requires"
+    manifest_path = eval_dir / _MANIFEST_NAME
+    try:
+        manifest = read_manifest(manifest_path)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Eval set {eval_dir} has no {_MANIFEST_NAME}; a frozen set names "
+            f"the circuit it was sampled from there"
+        ) from exc
+    key = eval_set_key(manifest, manifest_path)
+    circuit_file = Path(manifest["circuit_file"])
+    profile = resolve_profile(key.operation)
+    syndromes, observables = _read_shots(eval_dir)
+    metadata = profile.metadata_extractor(
+        circuit_file, num_observables=profile.data_contract.num_observables
+    )
+    try:
+        eval_set = EvalSet(
+            key=key,
+            syndromes=syndromes,
+            observables=observables,
+            observable_names=profile.observable_names,
+            circuit_file=circuit_file,
+            circuit_sha256=manifest["circuit_sha256"],
+            circuit_metadata=metadata,
+            manifest=manifest,
         )
-
-    raw_obs_names = manifest.get("observable_names")
-    obs_names: tuple[str, ...] | None = (
-        tuple(raw_obs_names) if raw_obs_names is not None else None
-    )
-
-    import stim
-
-    from sampling.graph import extract_circuit_metadata
-
-    dem_weights: np.ndarray | None = None
-    circuit_path = Path(manifest["circuit_file"])
-    if circuit_path.exists():
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        if circuit.num_detectors == syndromes.shape[1]:
-            base_meta = extract_circuit_metadata(
-                circuit, manifest["distance"], manifest["rounds"]
-            )
-            dem_weights = base_meta.dem_edge_weights
-
-    eval_set = EvalSet(
-        syndromes=syndromes,
-        observables=observables,
-        detector_coords=detector_coords,
-        distance=manifest["distance"],
-        rounds=manifest["rounds"],
-        error_prob=manifest["error_prob"],
-        num_shots=syndromes.shape[0],
-        circuit_file=manifest["circuit_file"],
-        manifest=manifest,
-        layout=layout,
-        observable_names=obs_names,
-        dem_edge_weights=dem_weights,
-    )
-    logger.debug(
-        "Loaded eval set for operation %s from %s", eval_set.operation, eval_dir
-    )
+    except ValueError as exc:
+        raise ValueError(
+            f"Eval set {eval_dir}, sampled from {circuit_file}: {exc}"
+        ) from exc
+    logger.debug("Loaded eval set %s from %s", key, eval_dir)
     return eval_set
+
+
+def _read_shots(eval_dir: Path) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+    """Read ``(syndromes, observables)`` from ``data.npz`` or the two ``.npy``."""
+    npz_path = eval_dir / "data.npz"
+    if npz_path.is_file():
+        with np.load(npz_path) as archive:
+            return archive["syndromes"], archive["observables"]
+    try:
+        return (
+            np.load(eval_dir / "syndromes.npy"),
+            np.load(eval_dir / "observables.npy"),
+        )
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Eval set {eval_dir} holds neither data.npz nor syndromes.npy and "
+            f"observables.npy"
+        ) from exc
 
 
 def evaluate_point(
@@ -401,7 +387,6 @@ def evaluate_point(
     stopping_baseline: str | None = None,
     check_interval: int = CHECK_INTERVAL,
     metric_policy: MetricPolicy | None = None,
-    observable_names: tuple[str, ...] | None = None,
     space_time_convention: str | None = None,
 ) -> EvalPointResult:
     """Evaluate all decoders on a single experiment point with adaptive stopping.
@@ -433,10 +418,6 @@ def evaluate_point(
         the result so the serializer can gate which metrics to emit.
         ``None`` preserves backward compatibility with callers that
         predate the profile registry.
-    observable_names : tuple of str or None
-        Ordered observable names for per-observable breakdown labels.
-        Falls back to ``eval_set.observable_names`` when not given
-        explicitly.
     space_time_convention : str or None
         Space-time accounting convention label from the profile.
 
@@ -475,8 +456,6 @@ def evaluate_point(
 
     n_total = eval_set.num_shots
     n_obs = eval_set.observables.shape[1]
-
-    resolved_obs_names = observable_names or eval_set.observable_names
 
     # Preallocate correctness arrays
     correct_arrays: dict[str, NDArray[np.bool_]] = {
@@ -554,16 +533,11 @@ def evaluate_point(
         # Per-observable breakdown
         obs_slice = obs_correct_arrays[name][:shots_processed]
         per_obs: list[ObservableResult] = []
-        for obs_idx in range(n_obs):
+        for obs_idx, obs_name in enumerate(eval_set.observable_names):
             obs_col = obs_slice[:, obs_idx]
             obs_n_err = int(np.sum(~obs_col))
             obs_ler_val = obs_n_err / shots_processed if shots_processed > 0 else 0.0
             obs_ci = wilson_interval(obs_n_err, shots_processed)
-            obs_name = (
-                resolved_obs_names[obs_idx]
-                if resolved_obs_names is not None and obs_idx < len(resolved_obs_names)
-                else f"observable_{obs_idx}"
-            )
             per_obs.append(
                 ObservableResult(
                     name=obs_name,
@@ -598,19 +572,14 @@ def evaluate_point(
     )
 
     return EvalPointResult(
-        key=ExperimentKey(
-            operation=eval_set.operation,
-            distance=eval_set.distance,
-            rounds=eval_set.rounds,
-            error_prob=eval_set.error_prob,
-        ),
+        key=eval_set.key,
         n_shots_used=shots_processed,
         decoder_results=decoder_results,
         mcnemar_results=mcnemar_results,
         stopping=stopping,
         outcome=outcome,
         metric_policy=metric_policy,
-        observable_names=resolved_obs_names,
+        observable_names=eval_set.observable_names,
         space_time_convention=space_time_convention,
     )
 
@@ -621,16 +590,18 @@ def discover_eval_sets(
     distances: list[int] | None = None,
     error_probs: list[float] | None = None,
 ) -> list[Path]:
-    """Discover eval set directories matching the (d, p) naming convention.
+    """Discover the frozen sets under one operation's evaluation root.
 
     ``eval_dir`` is one operation's evaluation root.  Discovery does not
     descend into another operation's root, so a sweep cannot span two
-    experiments because a filter was forgotten at the call site.
+    experiments because a filter was forgotten at the call site.  Each set is
+    filtered on its key as ``sampling.experiment.eval_set_key`` resolves it,
+    the same rule the loader applies.
 
     Parameters
     ----------
     eval_dir : Path
-        One operation's eval root, containing ``d{d}_p{p_str}/`` subdirs.
+        One operation's eval root, holding one directory per set.
     distances : list[int] or None
         Filter to these distances. None = all.
     error_probs : list[float] or None
@@ -640,29 +611,22 @@ def discover_eval_sets(
     -------
     list[Path]
         Sorted list of eval set directories.
+
+    Raises
+    ------
+    FileNotFoundError, ValueError
+        If a set under the root is not bound to its circuit.
     """
-    dirs: list[Path] = []
     if not eval_dir.is_dir():
-        return dirs
-
-    for sub in sorted(eval_dir.iterdir()):
-        if not sub.is_dir():
+        return []
+    dirs: list[Path] = []
+    for manifest_path in sorted(eval_dir.glob(f"*/{_MANIFEST_NAME}")):
+        key = eval_set_key(read_manifest(manifest_path), manifest_path)
+        if distances is not None and key.distance not in distances:
             continue
-        manifest_path = sub / "manifest.json"
-        if not manifest_path.exists():
+        if error_probs is not None and key.error_prob not in error_probs:
             continue
-
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        d = manifest.get("distance")
-        p = manifest.get("error_prob")
-
-        if distances is not None and d not in distances:
-            continue
-        if error_probs is not None and p not in error_probs:
-            continue
-
-        dirs.append(sub)
-
+        dirs.append(manifest_path.parent)
     return dirs
 
 
@@ -751,7 +715,6 @@ def _point_to_dict(result: EvalPointResult) -> dict:
     }
     if result.space_time_convention is not None:
         out["space_time_convention"] = result.space_time_convention
-    if result.observable_names is not None:
-        out["observable_names"] = list(result.observable_names)
+    out["observable_names"] = list(result.observable_names)
 
     return out

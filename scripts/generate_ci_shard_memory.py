@@ -1,8 +1,8 @@
 """Generate a small frozen CI data shard for integration tests.
 
 Produces pre-sampled syndromes and observable flips for d=3 at a single
-error probability, along with detector metadata.  The resulting files
-can be loaded by tests without any Stim dependency.
+error probability, bound by the manifest to the circuit they were sampled
+from; the loader reads everything else from that circuit.
 
 Usage
 -----
@@ -20,7 +20,6 @@ import numpy as np
 import stim
 
 from sampling.experiment import circuit_key
-from sampling.graph import extract_circuit_metadata
 
 
 CIRCUIT_PATH = Path("data/circuits/memory/d3_r3_p0_01.stim")
@@ -49,12 +48,9 @@ def main() -> None:
     syndromes = syndromes.astype(np.uint8)
     observables = observables.astype(np.uint8)
 
-    meta = extract_circuit_metadata(circuit, distance=key.distance, rounds=key.rounds)
-
     output_dir.mkdir(parents=True, exist_ok=True)
     np.save(output_dir / "syndromes.npy", syndromes)
     np.save(output_dir / "observables.npy", observables)
-    np.save(output_dir / "detector_coords.npy", meta.detector_coords)
 
     manifest = {
         "circuit_file": str(CIRCUIT_PATH),

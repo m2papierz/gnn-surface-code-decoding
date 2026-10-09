@@ -38,10 +38,11 @@ from evaluation.stats import (
     wilson_interval,
 )
 from sampling.dem import MechanismClass, read_dem_mechanisms
-from sampling.experiment import ExperimentKey
+from sampling.experiment import ExperimentKey, circuit_manifest_path
 from sampling.graph import complete_graph_edge_count
 from sampling.profile import resolve_profile
 from sampling.representation import registered_representations, resolve_builder
+from synthetic_eval_sets import synthetic_eval_set
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -82,24 +83,15 @@ class _FixedErrorsDecoder:
 
 
 def _memory_eval_set(distance: int, num_shots: int) -> EvalSet:
-    """Synthetic shots attached to a committed memory circuit's identity."""
+    """Synthetic shots at a committed memory circuit's identity."""
     rng = np.random.default_rng(distance)
-    circuit_file = f"data/circuits/memory/d{distance}_r{distance}_p0_01.stim"
-    return EvalSet(
-        syndromes=rng.integers(0, 2, size=(num_shots, 8), dtype=np.uint8),
-        observables=rng.integers(0, 2, size=(num_shots, 1), dtype=np.uint8),
-        detector_coords=rng.random((8, 3)),
-        distance=distance,
-        rounds=distance,
-        error_prob=0.01,
-        num_shots=num_shots,
-        circuit_file=circuit_file,
-        manifest={
-            "distance": distance,
-            "rounds": distance,
-            "error_prob": 0.01,
-            "circuit_file": circuit_file,
-        },
+    return synthetic_eval_set(
+        rng.integers(0, 2, size=(num_shots, 8), dtype=np.uint8),
+        rng.integers(0, 2, size=(num_shots, 1), dtype=np.uint8),
+        key=ExperimentKey(
+            operation="memory", distance=distance, rounds=distance, error_prob=0.01
+        ),
+        observable_names=resolve_profile("memory").observable_names,
     )
 
 
@@ -112,7 +104,7 @@ def _point(distance: int, errors: dict[str, int], num_shots: int) -> PointDiagno
     )
     return PointDiagnostics(
         key=ExperimentKey("memory", distance, distance, 0.01),
-        circuit_file=eval_set.circuit_file,
+        circuit_file=f"data/circuits/memory/d{distance}_r{distance}_p0_01.stim",
         circuit_sha256="0" * 64,
         shots_sha256="0" * 64,
         graph=graph_size(eval_set.syndromes),
@@ -618,9 +610,16 @@ class TestDiagnoseScalingScript:
     def test_set_naming_another_circuit_than_its_point_fails_the_run(
         self, script: dict[str, Any], eval_root: Path
     ) -> None:
+        # A byte-identical copy outside the operation root: the set is bound to
+        # it, but discovery resolves the point to the committed circuit.
         manifest_path = eval_root / "memory" / "d3_p0_0100" / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["circuit_file"] = "data/circuits/memory/d3_r3_p0_008.stim"
+        committed = Path(manifest["circuit_file"])
+        copy = eval_root / "copies" / committed.name
+        copy.parent.mkdir()
+        shutil.copyfile(committed, copy)
+        shutil.copyfile(circuit_manifest_path(committed), circuit_manifest_path(copy))
+        manifest["circuit_file"] = str(copy)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         with pytest.raises(ValueError, match="circuit discovery resolves"):
