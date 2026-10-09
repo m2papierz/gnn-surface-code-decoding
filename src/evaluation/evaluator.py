@@ -32,7 +32,7 @@ from evaluation.stats import (
     wilson_interval,
 )
 from sampling.experiment import ExperimentKey, eval_set_operation
-from sampling.graph import CircuitMetadata
+from sampling.graph import CircuitMetadata, LogicalOperationLayout
 from sampling.profile import MetricPolicy
 
 
@@ -63,14 +63,8 @@ class EvalSet:
         Relative path to source circuit file.
     manifest : dict
         Full manifest contents.
-    phase_ids : ndarray or None, shape ``(D,)``, intp
-        Per-detector phase-window index.  ``None`` for spatial-only sets.
-    phase_names : tuple of str or None
-        Ordered phase-window names.
-    patch_ids : ndarray or None, shape ``(D,)``, intp
-        Per-detector patch (code-block) index.
-    seam_mask : ndarray or None, shape ``(D,)``, bool
-        ``True`` for detectors on the merge boundary.
+    layout : LogicalOperationLayout or None
+        Phase, patch and seam structure.  ``None`` for spatial-only sets.
     operation : str
         Operation this set belongs to.  Resolved at construction from the
         manifest when it declares one, otherwise from the circuit the shots
@@ -89,10 +83,7 @@ class EvalSet:
     num_shots: int
     circuit_file: str
     manifest: dict
-    phase_ids: np.ndarray | None = None
-    phase_names: tuple[str, ...] | None = None
-    patch_ids: np.ndarray | None = None
-    seam_mask: np.ndarray | None = None
+    layout: LogicalOperationLayout | None = None
     observable_names: tuple[str, ...] | None = None
     dem_edge_weights: np.ndarray | None = None
     operation: str = field(init=False)
@@ -117,10 +108,7 @@ class EvalSet:
                 rounds=self.rounds,
                 num_detectors=n_det,
                 dem_edge_weights=dem_w,
-                phase_ids=self.phase_ids,
-                phase_names=self.phase_names,
-                patch_ids=self.patch_ids,
-                seam_mask=self.seam_mask,
+                layout=self.layout,
             ),
         )
 
@@ -314,10 +302,7 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    phase_ids: np.ndarray | None = None
-    phase_names: tuple[str, ...] | None = None
-    patch_ids: np.ndarray | None = None
-    seam_mask: np.ndarray | None = None
+    layout: LogicalOperationLayout | None = None
 
     npz_path = eval_dir / "data.npz"
     if npz_path.exists():
@@ -327,16 +312,18 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
         detector_coords = data["detector_coords"].astype(np.float64, copy=False)
 
         if "phase_ids" in data:
-            phase_ids = data["phase_ids"].astype(np.intp, copy=False)
-            patch_ids = data["patch_ids"].astype(np.intp, copy=False)
-            seam_mask = data["seam_mask"].astype(np.bool_, copy=False)
             raw_names = manifest.get("phase_names")
             if raw_names is None:
                 raise ValueError(
                     f"Eval set {eval_dir} has phase_ids in data but manifest "
                     f"lacks phase_names"
                 )
-            phase_names = tuple(raw_names)
+            layout = LogicalOperationLayout(
+                phase_ids=data["phase_ids"].astype(np.intp, copy=False),
+                phase_names=tuple(raw_names),
+                patch_ids=data["patch_ids"].astype(np.intp, copy=False),
+                seam_mask=data["seam_mask"].astype(np.bool_, copy=False),
+            )
     else:
         syn_path = eval_dir / "syndromes.npy"
         obs_path = eval_dir / "observables.npy"
@@ -360,7 +347,7 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
     # Validate: if the manifest declares a representation that needs phased
     # metadata, the stored data must provide it.
     rep_version = manifest.get("representation_version", "spatial")
-    if rep_version != "spatial" and phase_ids is None:
+    if rep_version != "spatial" and layout is None:
         raise ValueError(
             f"Eval set {eval_dir} declares representation {rep_version!r} but "
             f"lacks the phased metadata arrays (phase_ids, patch_ids, seam_mask) "
@@ -396,10 +383,7 @@ def load_eval_set(eval_dir: Path) -> EvalSet:
         num_shots=syndromes.shape[0],
         circuit_file=manifest["circuit_file"],
         manifest=manifest,
-        phase_ids=phase_ids,
-        phase_names=phase_names,
-        patch_ids=patch_ids,
-        seam_mask=seam_mask,
+        layout=layout,
         observable_names=obs_names,
         dem_edge_weights=dem_weights,
     )

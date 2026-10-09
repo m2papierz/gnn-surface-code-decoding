@@ -17,7 +17,7 @@ import torch
 from decoders import GNNDecoder
 from evaluation.evaluator import EvalSet, load_eval_set
 from model.decoder import build_model
-from sampling.graph import CircuitMetadata
+from sampling.graph import CircuitMetadata, LogicalOperationLayout
 from sampling.representation import (
     PHASED,
     SPATIAL_MEMORY,
@@ -61,7 +61,7 @@ class TestEvalSetCircuitMetadata:
         assert es.circuit_metadata.rounds == 3
         assert es.circuit_metadata.num_detectors == n_det
         np.testing.assert_array_equal(es.circuit_metadata.detector_coords, coords)
-        assert es.circuit_metadata.phase_ids is None
+        assert es.circuit_metadata.layout is None
 
     def test_phased_eval_set_has_metadata(self) -> None:
         rng = np.random.default_rng(42)
@@ -90,17 +90,19 @@ class TestEvalSetCircuitMetadata:
                 "error_prob": 0.01,
                 "circuit_file": "data/circuits/memory/d3_r3_p0_01.stim",
             },
-            phase_ids=phase_ids,
-            phase_names=phase_names,
-            patch_ids=patch_ids,
-            seam_mask=seam_mask,
+            layout=LogicalOperationLayout(
+                phase_ids=phase_ids,
+                phase_names=phase_names,
+                patch_ids=patch_ids,
+                seam_mask=seam_mask,
+            ),
         )
 
-        assert es.circuit_metadata.phase_ids is not None
-        np.testing.assert_array_equal(es.circuit_metadata.phase_ids, phase_ids)
-        assert es.circuit_metadata.phase_names == phase_names
-        np.testing.assert_array_equal(es.circuit_metadata.patch_ids, patch_ids)
-        np.testing.assert_array_equal(es.circuit_metadata.seam_mask, seam_mask)
+        assert es.circuit_metadata.layout is not None
+        np.testing.assert_array_equal(es.circuit_metadata.layout.phase_ids, phase_ids)
+        assert es.circuit_metadata.layout.phase_names == phase_names
+        np.testing.assert_array_equal(es.circuit_metadata.layout.patch_ids, patch_ids)
+        np.testing.assert_array_equal(es.circuit_metadata.layout.seam_mask, seam_mask)
 
     def test_ci_shard_metadata_matches(self) -> None:
         """CI shard's circuit_metadata matches hand-built metadata."""
@@ -114,7 +116,7 @@ class TestEvalSetCircuitMetadata:
         assert md.rounds == es.rounds
         assert md.num_detectors == es.syndromes.shape[1]
         np.testing.assert_array_equal(md.detector_coords, es.detector_coords)
-        assert md.phase_ids is None
+        assert md.layout is None
 
 
 # load_eval_set reads phased metadata from npz
@@ -156,11 +158,11 @@ class TestLoadEvalSetPhasedMetadata:
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
         es = load_eval_set(tmp_path)
-        assert es.circuit_metadata.phase_ids is not None
-        np.testing.assert_array_equal(es.circuit_metadata.phase_ids, phase_ids)
-        assert es.circuit_metadata.phase_names == ("memory", "merge", "split")
-        np.testing.assert_array_equal(es.circuit_metadata.patch_ids, patch_ids)
-        np.testing.assert_array_equal(es.circuit_metadata.seam_mask, seam_mask)
+        assert es.circuit_metadata.layout is not None
+        np.testing.assert_array_equal(es.circuit_metadata.layout.phase_ids, phase_ids)
+        assert es.circuit_metadata.layout.phase_names == ("memory", "merge", "split")
+        np.testing.assert_array_equal(es.circuit_metadata.layout.patch_ids, patch_ids)
+        np.testing.assert_array_equal(es.circuit_metadata.layout.seam_mask, seam_mask)
 
     def test_spatial_npz_has_no_phased_fields(self, tmp_path: Path) -> None:
         """A spatial eval set loads without phased arrays."""
@@ -181,7 +183,7 @@ class TestLoadEvalSetPhasedMetadata:
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
         es = load_eval_set(tmp_path)
-        assert es.circuit_metadata.phase_ids is None
+        assert es.circuit_metadata.layout is None
 
     def test_rejects_phased_representation_without_data(self, tmp_path: Path) -> None:
         """A manifest declaring phased representation but no phased arrays raises."""
@@ -298,10 +300,12 @@ class TestGNNDecoderRepresentationValidation:
             rounds=3,
             num_detectors=n_det,
             dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
-            phase_ids=np.zeros(n_det, dtype=np.intp),
-            phase_names=("memory",),
-            patch_ids=np.zeros(n_det, dtype=np.intp),
-            seam_mask=np.zeros(n_det, dtype=np.bool_),
+            layout=LogicalOperationLayout(
+                phase_ids=np.zeros(n_det, dtype=np.intp),
+                phase_names=("memory",),
+                patch_ids=np.zeros(n_det, dtype=np.intp),
+                seam_mask=np.zeros(n_det, dtype=np.bool_),
+            ),
         )
         model = build_model(hidden_dim=32, num_layers=2, dropout=0.0)
 
@@ -371,4 +375,4 @@ class TestEvalSetManifestRepresentation:
 
         es = load_eval_set(sample_dir)
         assert es.manifest.get("representation_version", "spatial") == "spatial"
-        assert es.circuit_metadata.phase_ids is None
+        assert es.circuit_metadata.layout is None

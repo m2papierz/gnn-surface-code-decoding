@@ -74,6 +74,13 @@ class _GINEBlock(nn.Module):
         self._edge_weights: EdgeUpdateWeights | None = None
         self._edge_weights_key: tuple[int, int] | None = None
 
+    @property
+    def _edge_in(self) -> nn.Linear:
+        """First layer of ``edge_update``, the projection the fused path splits."""
+        linear = self.edge_update[0]
+        assert isinstance(linear, nn.Linear)  # constructed in __init__
+        return linear
+
     def _fused_edge_weights(self) -> EdgeUpdateWeights | None:
         """Return the cached weight split, or None off the fast path.
 
@@ -85,8 +92,7 @@ class _GINEBlock(nn.Module):
         if get_backend() is not Backend.CUDA:
             return None
 
-        linear = self.edge_update[0]
-        assert isinstance(linear, nn.Linear)  # constructed above
+        linear = self._edge_in
         key = (linear.weight.data_ptr(), linear.weight._version)
         if self._edge_weights_key != key or self._edge_weights is None:
             self._edge_weights = EdgeUpdateWeights.from_linear(linear)
@@ -136,11 +142,8 @@ class _GINEBlock(nn.Module):
 
         # Edge update: symmetric features fused into their projection, then
         # the rest of the MLP, then norm/residual.
-        e_new = edge_update(
-            x, edge_index, e, self.edge_update[0], self._fused_edge_weights()
-        )
-        for layer in self.edge_update[1:]:
-            e_new = layer(e_new)
+        e_new = edge_update(x, edge_index, e, self._edge_in, self._fused_edge_weights())
+        e_new = self.edge_update[1:](e_new)
         e_new = fused_norm_residual_dropout(
             e_new,
             e,
@@ -224,9 +227,7 @@ class DetectorGraphEncoder(nn.Module):
             Edge embeddings.
         """
         h = self.node_proj(x)
-        edge_h = None
-
-        for layer in self.layers:
+        h, edge_h = self.layers[0](h, edge_index, edge_attr, None)
+        for layer in self.layers[1:]:
             h, edge_h = layer(h, edge_index, edge_attr, edge_h)
-
         return h, edge_h

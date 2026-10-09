@@ -10,24 +10,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import Any, Final
 
 import numpy as np
 import stim
-import tqec
 from tqec import BlockGraph, NoiseModel
 from tqec import compile_block_graph as _tqec_compile
 from tqec.utils.noise_model import NoiseRule
 from tqec.utils.scale import LinearFunction
 
+from sampling.dem import error_instructions
 from sampling.experiment import ExperimentKey, write_circuit_manifest
-
-
-if TYPE_CHECKING:
-    from sampling.graph import CircuitMetadata
+from sampling.graph import (
+    CircuitMetadata,
+    LogicalOperationLayout,
+    extract_circuit_metadata,
+)
 
 
 __all__ = [
@@ -181,8 +183,8 @@ class LogicalOperationMetadata:
                     f"seam detector {idx} at t={t} is not inside any merge window"
                 )
 
-    def to_circuit_metadata_fields(self, detector_coords: np.ndarray) -> dict[str, Any]:
-        """Convert to the arrays ``CircuitMetadata`` carries.
+    def to_layout(self, detector_coords: np.ndarray) -> LogicalOperationLayout:
+        """Convert to the per-detector layout ``CircuitMetadata`` carries.
 
         Parameters
         ----------
@@ -190,8 +192,7 @@ class LogicalOperationMetadata:
 
         Returns
         -------
-        dict
-            Keys: ``phase_ids``, ``phase_names``, ``patch_ids``, ``seam_mask``.
+        LogicalOperationLayout
         """
         n_det = detector_coords.shape[0]
 
@@ -208,14 +209,12 @@ class LogicalOperationMetadata:
         seam_set = frozenset(self.seam_detector_indices)
         seam_mask = np.array([i in seam_set for i in range(n_det)], dtype=np.bool_)
 
-        patch_id_arr = np.array(self.patch_ids, dtype=np.intp)
-
-        return {
-            "phase_ids": phase_ids,
-            "phase_names": phase_names,
-            "patch_ids": patch_id_arr,
-            "seam_mask": seam_mask,
-        }
+        return LogicalOperationLayout(
+            phase_ids=phase_ids,
+            phase_names=phase_names,
+            patch_ids=np.array(self.patch_ids, dtype=np.intp),
+            seam_mask=seam_mask,
+        )
 
     @classmethod
     def from_manifest(
@@ -282,8 +281,8 @@ def extract_logical_op_circuit_metadata(
     rounds: int,
     *,
     logical_op_metadata: LogicalOperationMetadata,
-) -> "CircuitMetadata":
-    """Build a ``CircuitMetadata`` with logical-operation fields populated.
+) -> CircuitMetadata:
+    """Build a ``CircuitMetadata`` carrying a logical-operation layout.
 
     Parameters
     ----------
@@ -300,11 +299,8 @@ def extract_logical_op_circuit_metadata(
     -------
     CircuitMetadata
     """
-    from sampling.graph import CircuitMetadata, extract_circuit_metadata
-
     base = extract_circuit_metadata(circuit, distance, rounds)
     logical_op_metadata.validate_against_coords(base.detector_coords)
-    fields = logical_op_metadata.to_circuit_metadata_fields(base.detector_coords)
 
     return CircuitMetadata(
         detector_coords=base.detector_coords,
@@ -312,10 +308,7 @@ def extract_logical_op_circuit_metadata(
         rounds=base.rounds,
         num_detectors=base.num_detectors,
         dem_edge_weights=base.dem_edge_weights,
-        phase_ids=fields["phase_ids"],
-        phase_names=fields["phase_names"],
-        patch_ids=fields["patch_ids"],
-        seam_mask=fields["seam_mask"],
+        layout=logical_op_metadata.to_layout(base.detector_coords),
     )
 
 
@@ -394,8 +387,6 @@ def _align_detector_times(circuit: stim.Circuit) -> stim.Circuit:
     max_t = max(by_t)
     t0_positions = {pos for _, pos in by_t[0.0]}
 
-    from collections import Counter
-
     max_t_counts = Counter(pos for _, pos in by_t[max_t])
     dup_positions = {pos for pos, cnt in max_t_counts.items() if cnt > 1}
 
@@ -420,6 +411,7 @@ def _align_detector_times(circuit: stim.Circuit) -> stim.Circuit:
     new_circuit = stim.Circuit()
     det_idx = 0
     for inst in circuit.flattened():
+        assert isinstance(inst, stim.CircuitInstruction), "flattened has no blocks"
         if inst.name == "DETECTOR":
             if det_idx in shift_set:
                 args = list(inst.gate_args_copy())
@@ -883,15 +875,10 @@ def validate_logical_op_circuit(
 
     # 7. Each observable is non-trivial
     observable_has_error = [False] * circuit.num_observables
-    for instruction in dem.flattened():
-        if instruction.type == "error":
-            for target in instruction.targets_copy():
-                if target.is_relative_detector_id():
-                    pass
-                elif target.is_logical_observable_id():
-                    obs_idx = target.val
-                    if 0 <= obs_idx < circuit.num_observables:
-                        observable_has_error[obs_idx] = True
+    for _, targets in error_instructions(dem):
+        for target in targets:
+            if target.is_logical_observable_id():
+                observable_has_error[target.val] = True
     for obs_idx, has in enumerate(observable_has_error):
         if not has:
             raise fail(f"observable {obs_idx} is trivial (no error mechanism flips it)")
@@ -968,7 +955,7 @@ def generate_and_write_circuit(
         expected_observable_count=expected_obs,
     )
 
-    rounds_per_block = block_temporal_height(k) + 2
+    rounds_per_block = block_temporal_height.integer_eval(k) + 2
     n_z = len(_z_levels(block_graph))
     total_rounds = n_z * rounds_per_block
 
@@ -988,8 +975,8 @@ def generate_and_write_circuit(
         error_prob=error_prob,
     )
     manifest_provenance: dict[str, Any] = {
-        "tqec_version": tqec.__version__,
-        "stim_version": stim.__version__,
+        "tqec_version": version("tqec"),
+        "stim_version": version("stim"),
         "k": k,
         "circuit_file": str(circuit_path),
         "circuit_sha256": circuit_sha256,

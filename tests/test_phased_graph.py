@@ -13,6 +13,7 @@ from sampling.graph import (
     PHASED_NODE_DIM,
     CircuitMetadata,
     FiredDetectorGraph,
+    LogicalOperationLayout,
     build_fired_detector_graph,
     build_phased_detector_graph,
 )
@@ -88,10 +89,12 @@ def _make_merge_split_metadata(
         rounds=rounds,
         num_detectors=n_det,
         dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
-        phase_ids=phase_ids,
-        phase_names=phase_names,
-        patch_ids=patch_ids,
-        seam_mask=seam_mask,
+        layout=LogicalOperationLayout(
+            phase_ids=phase_ids,
+            phase_names=phase_names,
+            patch_ids=patch_ids,
+            seam_mask=seam_mask,
+        ),
     )
 
 
@@ -364,10 +367,12 @@ class TestDynamicBoundaryDistances:
             rounds=6,
             num_detectors=n_det,
             dem_edge_weights=np.zeros((n_det, n_det), dtype=np.float64),
-            phase_ids=phase_ids,
-            phase_names=("memory", "merge", "memory"),
-            patch_ids=patch_ids,
-            seam_mask=seam_mask,
+            layout=LogicalOperationLayout(
+                phase_ids=phase_ids,
+                phase_names=("memory", "merge", "memory"),
+                patch_ids=patch_ids,
+                seam_mask=seam_mask,
+            ),
         )
 
     def test_merge_phase_boundary_distances_smaller(self) -> None:
@@ -381,8 +386,8 @@ class TestDynamicBoundaryDistances:
 
         # Identify merge-phase seam nodes in the output
         fired = np.arange(meta.num_detectors)
-        merge_seam = (meta.seam_mask[fired]) & (
-            np.array(meta.phase_names)[meta.phase_ids[fired]] == "merge"
+        merge_seam = (meta.layout.seam_mask[fired]) & (
+            np.array(meta.layout.phase_names)[meta.layout.phase_ids[fired]] == "merge"
         )
         if not merge_seam.any():
             pytest.skip("No merge-phase seam detectors in fixture")
@@ -405,8 +410,8 @@ class TestDynamicBoundaryDistances:
         g = build_phased_detector_graph(syndrome, meta)
 
         fired = np.arange(meta.num_detectors)
-        phase_names = np.array(meta.phase_names)
-        memory_mask = phase_names[meta.phase_ids[fired]] == "memory"
+        phase_names = np.array(meta.layout.phase_names)
+        memory_mask = phase_names[meta.layout.phase_ids[fired]] == "memory"
         memory_d_x = g.node_features[memory_mask, 3]
 
         # Memory-phase boundary distances should span roughly [-1, 1]
@@ -439,10 +444,12 @@ class TestDynamicBoundaryDistances:
             rounds=6,
             num_detectors=7,
             dem_edge_weights=np.zeros((7, 7), dtype=np.float64),
-            phase_ids=np.array([0, 0, 0, 0, 0, 0, 1], dtype=np.intp),
-            phase_names=("memory", "merge"),
-            patch_ids=np.array([0, 0, 0, 1, 1, 1, 0], dtype=np.intp),
-            seam_mask=np.array([False, False, False, False, False, False, True]),
+            layout=LogicalOperationLayout(
+                phase_ids=np.array([0, 0, 0, 0, 0, 0, 1], dtype=np.intp),
+                phase_names=("memory", "merge"),
+                patch_ids=np.array([0, 0, 0, 1, 1, 1, 0], dtype=np.intp),
+                seam_mask=np.array([False, False, False, False, False, False, True]),
+            ),
         )
 
         syndrome = np.zeros(7, dtype=np.uint8)

@@ -186,7 +186,11 @@ def _make_logical_op_extractor(
     def _extractor(
         circuit: "stim.Circuit", distance: int, rounds: int
     ) -> "CircuitMetadata":
-        from sampling.graph import CircuitMetadata, extract_circuit_metadata
+        from sampling.graph import (
+            CircuitMetadata,
+            LogicalOperationLayout,
+            extract_circuit_metadata,
+        )
 
         base = extract_circuit_metadata(circuit, distance, rounds)
 
@@ -220,8 +224,6 @@ def _make_logical_op_extractor(
                     phase_ids[det_idx] = pw_idx
                     break
 
-        phase_names = tuple(pw["name"] for pw in raw_windows)
-        patch_ids = _np.array(manifest["patch_ids"], dtype=_np.intp)
         seam_indices = _np.array(manifest["seam_detector_indices"], dtype=_np.intp)
         seam_mask = _np.zeros(n_det, dtype=_np.bool_)
         seam_mask[seam_indices] = True
@@ -232,10 +234,12 @@ def _make_logical_op_extractor(
             rounds=base.rounds,
             num_detectors=n_det,
             dem_edge_weights=base.dem_edge_weights,
-            phase_ids=phase_ids,
-            phase_names=phase_names,
-            patch_ids=patch_ids,
-            seam_mask=seam_mask,
+            layout=LogicalOperationLayout(
+                phase_ids=phase_ids,
+                phase_names=tuple(pw["name"] for pw in raw_windows),
+                patch_ids=_np.array(manifest["patch_ids"], dtype=_np.intp),
+                seam_mask=seam_mask,
+            ),
         )
 
     return _extractor

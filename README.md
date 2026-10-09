@@ -101,10 +101,14 @@ uv run scripts/plot_calibration.py           # reliability diagrams and ECE
 ## Development
 
 ```bash
+make setup               # uv sync --locked + pre-commit hook (runs fmt and lint)
 make fmt                 # ruff format + import sorting
 make lint                # ruff check
+make check               # pyright over src/ and scripts/
 make test                # pytest
 ```
+
+Every tool runs at the version `uv.lock` pins.
 
 ## License
 

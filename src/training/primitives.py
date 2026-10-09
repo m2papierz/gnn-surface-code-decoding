@@ -9,7 +9,7 @@ orchestrators that compose these functions.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -53,7 +53,7 @@ class TrainingState:
         Step-level LR scheduler (SequentialLR).
     criterion : nn.Module
         Loss function.
-    scaler : torch.amp.GradScaler
+    scaler : torch.GradScaler
         Mixed-precision gradient scaler.
     amp_dtype : torch.dtype
         Autocast dtype.
@@ -67,7 +67,7 @@ class TrainingState:
     optimizer: AdamW
     scheduler: LRScheduler
     criterion: nn.Module
-    scaler: torch.amp.GradScaler
+    scaler: torch.GradScaler
     amp_dtype: torch.dtype
     device: torch.device
     max_grad_norm: float
@@ -146,9 +146,9 @@ def build_training_state(
     ).to(device)
 
     if cfg.backend == "compiled" and device.type == "cuda":
-        model = torch.compile(
-            model, mode=cfg.compile_mode, dynamic=True, fullgraph=False
-        )
+        # In place, so the module keeps its type and its state_dict keys:
+        # a checkpoint does not depend on the backend that wrote it.
+        model.compile(mode=cfg.compile_mode, dynamic=True, fullgraph=False)
         logger.info("torch.compile enabled (mode=%s, dynamic=True)", cfg.compile_mode)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -178,7 +178,7 @@ def build_training_state(
     criterion = build_criterion(cfg)
 
     use_amp = device.type == "cuda"
-    scaler = torch.amp.GradScaler(enabled=use_amp)
+    scaler = torch.GradScaler(enabled=use_amp)
     amp_dtype = cfg.amp_torch_dtype
     if use_amp:
         torch.set_float32_matmul_precision("high")
@@ -216,7 +216,7 @@ def train_step(state: TrainingState, batch: Any) -> tuple[float, torch.Tensor]:
     state.model.train()
     state.optimizer.zero_grad(set_to_none=True)
 
-    with torch.amp.autocast(
+    with torch.autocast(
         device_type=state.device.type,
         enabled=state.scaler.is_enabled(),
         dtype=state.amp_dtype,
@@ -263,7 +263,7 @@ def compute_val_metrics(
 
     for batch in val_batches:
         batch = batch.to(state.device)
-        with torch.amp.autocast(
+        with torch.autocast(
             device_type=state.device.type,
             enabled=use_amp,
             dtype=state.amp_dtype,
@@ -311,7 +311,7 @@ def sweep_threshold(
 
     for batch in val_batches:
         batch = batch.to(state.device)
-        with torch.amp.autocast(
+        with torch.autocast(
             device_type=state.device.type,
             enabled=use_amp,
             dtype=state.amp_dtype,
@@ -486,7 +486,7 @@ def load_checkpoint(
 
 
 def make_streaming_loader(
-    settings: list[CircuitSetting],
+    settings: Sequence[CircuitSetting],
     cfg: TrainConfig,
     device: torch.device,
     *,
@@ -496,7 +496,7 @@ def make_streaming_loader(
 
     Parameters
     ----------
-    settings : list of CircuitSetting
+    settings : sequence of CircuitSetting
         Circuit settings to sample from.
     cfg : TrainConfig
         Training config (seed, batch_size, num_workers, etc.).
@@ -523,8 +523,10 @@ def make_streaming_loader(
     pin = device.type == "cuda"
     persistent = cfg.num_workers > 0
     prefetch = 2 if cfg.num_workers > 0 else None
+    # PyG's annotation lists only map-style datasets; its collater batches the
+    # Data an IterableDataset yields unchanged, which is what streaming needs.
     return DataLoader(
-        ds,
+        ds,  # pyright: ignore[reportArgumentType]
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         pin_memory=pin,
@@ -534,7 +536,7 @@ def make_streaming_loader(
 
 
 def make_frozen_val_samples(
-    settings: list[CircuitSetting],
+    settings: Sequence[CircuitSetting],
     cfg: TrainConfig,
     val_size: int,
     *,
@@ -544,7 +546,7 @@ def make_frozen_val_samples(
 
     Parameters
     ----------
-    settings : list of CircuitSetting
+    settings : sequence of CircuitSetting
         Circuit settings to sample from.
     cfg : TrainConfig
         Training config (operation, include_p_feature, etc.).

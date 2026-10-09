@@ -1,39 +1,39 @@
 .PHONY: install setup fmt lint check test clean
 
-PYTHON   ?= python3
-UV       ?= uv
+UV  ?= uv
+RUN := $(UV) run --locked
 
 # ── Install ──────────────────────────────────────────────────────────────────
 
 install:
-	$(UV) sync
+	$(UV) sync --locked
 
 # ── Setup (first-time contributor) ───────────────────────────────────────────
 
 setup: install
-	$(UV) run pre-commit install
+	$(RUN) pre-commit install
 	@echo "  ✓ Pre-commit hooks installed"
 
 # ── Format ───────────────────────────────────────────────────────────────────
 
 fmt:
-	$(UV) run ruff check --select I --fix src/ scripts/ tests/
-	$(UV) run ruff format src/ scripts/ tests/
+	$(RUN) ruff check --select I --fix src/ scripts/ tests/
+	$(RUN) ruff format src/ scripts/ tests/
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
 lint:
-	$(UV) run ruff check src/ scripts/ tests/
+	$(RUN) ruff check src/ scripts/ tests/
 
 # ── Type-check ───────────────────────────────────────────────────────────────
 
 check:
-	$(UV) run pyright src/ scripts/ tests/
+	$(RUN) pyright
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
 test:
-	$(UV) run pytest
+	$(RUN) pytest
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 

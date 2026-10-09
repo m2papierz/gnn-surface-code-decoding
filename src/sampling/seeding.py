@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 
 
-def stable_seed(*parts: str, base: int | None) -> int | None:
+def stable_seed(*parts: str, base: int) -> int:
     """
     Derive a reproducible seed from base seed and string identifiers.
 
@@ -16,17 +16,14 @@ def stable_seed(*parts: str, base: int | None) -> int | None:
     ----------
     *parts : str
         String identifiers to incorporate into the seed (e.g., "d=5", "p=0.01").
-    base : int or None
-        Base seed value. If None, returns None.
+    base : int
+        Base seed value.
 
     Returns
     -------
-    int or None
-        Derived seed, or None if base is None.
+    int
+        Derived 64-bit seed.
     """
-    if base is None:
-        return None
-
     h = hashlib.blake2b(digest_size=8)
     h.update(str(base).encode())
     for part in parts:

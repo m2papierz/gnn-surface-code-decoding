@@ -8,6 +8,8 @@ observable path exactly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -81,6 +83,7 @@ def _make_training_state(
 
     device = device or torch.device("cpu")
     cfg = TrainConfig(
+        circuit_dir=Path("data/circuits/memory"),
         sample_budget=1000,
         batch_size=64,
         val_interval_samples=500,
@@ -192,6 +195,7 @@ def _default_cfg():
     from training.config import TrainConfig
 
     return TrainConfig(
+        circuit_dir=Path("data/circuits/memory"),
         sample_budget=1000,
         batch_size=64,
         val_interval_samples=500,

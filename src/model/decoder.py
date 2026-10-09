@@ -7,10 +7,13 @@ using attention-weighted, max, and sum node pooling.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import torch
 import torch.nn as nn
+from torch_geometric.data import Batch, Data
+from torch_geometric.data.data import BaseData
 from torch_geometric.nn import global_add_pool, global_max_pool
 from torch_geometric.utils import softmax
 
@@ -43,6 +46,26 @@ class BatchedGraph(Protocol):
     num_graphs: int
 
 
+def collate_graphs(graphs: Sequence[Data], device: torch.device) -> Batch:
+    """Batch per-shot graphs into one PyG ``Batch`` on ``device``.
+
+    Parameters
+    ----------
+    graphs : sequence of Data
+        Per-shot graphs, at least one.
+    device : torch.device
+        Device the batch is moved to.
+
+    Returns
+    -------
+    Batch
+    """
+    batch = Batch.from_data_list(list[BaseData](graphs))
+    # Batch takes its Data base class at runtime (DynamicInheritance), so the
+    # inherited ``to`` is invisible to static analysis.
+    return batch.to(device)  # pyright: ignore[reportAttributeAccessIssue]
+
+
 class LogicalHead(nn.Module):
     """
     Graph-level head for predicting logical observable flips.
@@ -69,6 +92,7 @@ class LogicalHead(nn.Module):
     ) -> None:
         super().__init__()
 
+        self.num_observables = num_observables
         self.gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),

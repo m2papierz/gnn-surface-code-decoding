@@ -46,6 +46,55 @@ def complete_graph_edge_count[CountT: (int, NDArray[np.int64])](
 
 
 @dataclass(frozen=True, slots=True)
+class LogicalOperationLayout:
+    """Per-detector structure of a logical-operation circuit.
+
+    Parameters
+    ----------
+    phase_ids : ndarray, shape ``(D,)``, intp
+        Phase-window index of each detector.
+    phase_names : tuple of str
+        Ordered phase-window names; ``phase_names[phase_ids[i]]`` is the
+        phase of detector *i*.
+    patch_ids : ndarray, shape ``(D,)``, intp
+        Patch (code-block) index of each detector.
+    seam_mask : ndarray, shape ``(D,)``, bool
+        ``True`` for detectors on the merge boundary.
+    """
+
+    phase_ids: NDArray[np.intp]
+    phase_names: tuple[str, ...]
+    patch_ids: NDArray[np.intp]
+    seam_mask: NDArray[np.bool_]
+
+    def __post_init__(self) -> None:
+        if self.phase_ids.ndim != 1:
+            raise ValueError(f"phase_ids must be 1-D, got shape {self.phase_ids.shape}")
+        if not self.phase_names:
+            raise ValueError("phase_names must be non-empty")
+        n_phases = len(self.phase_names)
+        if self.phase_ids.min() < 0 or self.phase_ids.max() >= n_phases:
+            raise ValueError(
+                f"phase_ids values must be in [0, {n_phases}), "
+                f"got [{self.phase_ids.min()}, {self.phase_ids.max()}]"
+            )
+        for name, values in (
+            ("patch_ids", self.patch_ids),
+            ("seam_mask", self.seam_mask),
+        ):
+            if values.shape != self.phase_ids.shape:
+                raise ValueError(
+                    f"{name} shape {values.shape} != phase_ids shape "
+                    f"{self.phase_ids.shape}"
+                )
+
+    @property
+    def num_detectors(self) -> int:
+        """Detectors the layout covers."""
+        return self.phase_ids.shape[0]
+
+
+@dataclass(frozen=True, slots=True)
 class CircuitMetadata:
     """Precomputed per-circuit metadata for the graph builder.
 
@@ -67,16 +116,9 @@ class CircuitMetadata:
         model.  Entry ``[i, j]`` is the combined probability that
         detectors *i* and *j* are both flipped by the same error
         mechanism.  Zero for pairs with no shared error.
-    phase_ids : ndarray or None, shape ``(D,)``, intp
-        Per-detector phase-window index (0-based).  ``None`` for operations
-        without phase structure (e.g. memory).
-    phase_names : tuple of str or None
-        Ordered phase-window names, one per window.
-        ``phase_names[phase_ids[i]]`` gives the phase of detector *i*.
-    patch_ids : ndarray or None, shape ``(D,)``, intp
-        Per-detector patch (code-block) index.
-    seam_mask : ndarray or None, shape ``(D,)``, bool
-        ``True`` for detectors on the merge boundary.
+    layout : LogicalOperationLayout or None
+        Phase, patch and seam structure of a logical-operation circuit;
+        ``None`` for operations without one (memory).
     """
 
     detector_coords: np.ndarray
@@ -84,10 +126,7 @@ class CircuitMetadata:
     rounds: int
     num_detectors: int
     dem_edge_weights: np.ndarray
-    phase_ids: np.ndarray | None = None
-    phase_names: tuple[str, ...] | None = None
-    patch_ids: np.ndarray | None = None
-    seam_mask: np.ndarray | None = None
+    layout: LogicalOperationLayout | None = None
 
     def __post_init__(self) -> None:
         if self.detector_coords.ndim != 2 or self.detector_coords.shape[1] < 3:
@@ -111,43 +150,10 @@ class CircuitMetadata:
         if self.rounds < 1:
             raise ValueError(f"rounds must be >= 1, got {self.rounds}")
 
-        lo_fields = (self.phase_ids, self.phase_names, self.patch_ids, self.seam_mask)
-        any_set = any(f is not None for f in lo_fields)
-        all_set = all(f is not None for f in lo_fields)
-        if any_set and not all_set:
-            present = [
-                n
-                for n, f in zip(
-                    ("phase_ids", "phase_names", "patch_ids", "seam_mask"),
-                    lo_fields,
-                    strict=True,
-                )
-                if f is not None
-            ]
+        if self.layout is not None and self.layout.num_detectors != D:
             raise ValueError(
-                f"Logical-operation fields are all-or-nothing: got only {present}"
-            )
-
-        if self.phase_ids is not None:
-            if self.phase_ids.shape != (D,):
-                raise ValueError(
-                    f"phase_ids shape {self.phase_ids.shape} != expected ({D},)"
-                )
-            if not self.phase_names:
-                raise ValueError("phase_names must be non-empty when phase_ids is set")
-            n_phases = len(self.phase_names)
-            if self.phase_ids.max() >= n_phases or self.phase_ids.min() < 0:
-                raise ValueError(
-                    f"phase_ids values must be in [0, {n_phases}), "
-                    f"got [{self.phase_ids.min()}, {self.phase_ids.max()}]"
-                )
-        if self.patch_ids is not None and self.patch_ids.shape != (D,):
-            raise ValueError(
-                f"patch_ids shape {self.patch_ids.shape} != expected ({D},)"
-            )
-        if self.seam_mask is not None and self.seam_mask.shape != (D,):
-            raise ValueError(
-                f"seam_mask shape {self.seam_mask.shape} != expected ({D},)"
+                f"layout phase_ids shape {self.layout.phase_ids.shape} != "
+                f"expected ({D},)"
             )
 
 
@@ -502,9 +508,6 @@ def _patch_geometry(
 
 
 def _merge_geometry(
-    all_coords_xy: np.ndarray,
-    phase_ids: np.ndarray,
-    phase_names: tuple[str, ...],
     patch_centers: np.ndarray,
     num_patches: int,
     distance: int,
@@ -513,9 +516,6 @@ def _merge_geometry(
 
     Parameters
     ----------
-    all_coords_xy : ndarray, shape ``(D, 2)``
-    phase_ids : ndarray, shape ``(D,)``
-    phase_names : tuple of str
     patch_centers : ndarray, shape ``(P, 2)``
     num_patches : int
     distance : int
@@ -554,9 +554,7 @@ def build_phased_detector_graph(
     syndrome : ndarray, shape ``(D,)``
         Binary syndrome bit-vector (1 = fired).
     metadata : CircuitMetadata
-        Precomputed circuit metadata **with logical-operation fields
-        populated** (``phase_ids``, ``phase_names``, ``patch_ids``,
-        ``seam_mask``).
+        Precomputed circuit metadata carrying a ``layout``.
 
     Returns
     -------
@@ -566,13 +564,14 @@ def build_phased_detector_graph(
     Raises
     ------
     ValueError
-        If metadata lacks logical-operation fields.
+        If metadata carries no logical-operation layout.
     """
-    if metadata.phase_ids is None:
+    layout = metadata.layout
+    if layout is None:
         raise ValueError(
             "build_phased_detector_graph requires CircuitMetadata with "
-            "logical-operation fields (phase_ids, phase_names, patch_ids, "
-            "seam_mask); got None - use the spatial builder for memory circuits"
+            "logical-operation fields (a LogicalOperationLayout); got None - use "
+            "the spatial builder for memory circuits"
         )
 
     fired = np.flatnonzero(syndrome)
@@ -604,24 +603,17 @@ def build_phased_detector_graph(
     y_norm = y / spatial_scale
     t_norm = t / temporal_scale
 
-    patch_centers, num_patches = _patch_geometry(all_coords[:, :2], metadata.patch_ids)
-    merge_center, merge_scale = _merge_geometry(
-        all_coords[:, :2],
-        metadata.phase_ids,
-        metadata.phase_names,
-        patch_centers,
-        num_patches,
-        d,
-    )
+    patch_centers, num_patches = _patch_geometry(all_coords[:, :2], layout.patch_ids)
+    merge_center, merge_scale = _merge_geometry(patch_centers, num_patches, d)
 
-    fired_patch_ids = metadata.patch_ids[fired]
+    fired_patch_ids = layout.patch_ids[fired]
     fired_centers = patch_centers[fired_patch_ids]  # (N, 2)
 
     d_x = (x - fired_centers[:, 0]) / float(d)
     d_y = (y - fired_centers[:, 1]) / float(d)
 
-    phase_name_arr = np.array(metadata.phase_names)
-    fired_phase_names = phase_name_arr[metadata.phase_ids[fired]]
+    phase_name_arr = np.array(layout.phase_names)
+    fired_phase_names = phase_name_arr[layout.phase_ids[fired]]
     merge_mask = fired_phase_names == "merge"
 
     if merge_mask.any():
@@ -637,7 +629,7 @@ def build_phased_detector_graph(
     max_patch = max(1, num_patches - 1)
     patch_id_norm = fired_patch_ids.astype(np.float32) / max_patch
 
-    is_seam = metadata.seam_mask[fired].astype(np.float32)
+    is_seam = layout.seam_mask[fired].astype(np.float32)
 
     node_features = np.column_stack(
         [

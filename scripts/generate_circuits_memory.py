@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+from importlib.metadata import version
 from pathlib import Path
 from typing import Final
 
@@ -114,7 +115,7 @@ def circuit_provenance(circuit_path: Path, circuit: stim.Circuit) -> dict[str, o
     dem = circuit.detector_error_model(decompose_errors=True)
     return {
         "family": FAMILY,
-        "stim_version": stim.__version__,
+        "stim_version": version("stim"),
         "circuit_file": str(circuit_path),
         "circuit_sha256": hashlib.sha256(circuit_path.read_bytes()).hexdigest(),
         "num_detectors": dem.num_detectors,
@@ -189,7 +190,7 @@ def main() -> None:
         generated,
         manifested,
         out_dir,
-        stim.__version__,
+        version("stim"),
     )
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
@@ -63,7 +64,7 @@ def main() -> None:
     manifest = {
         "circuit_file": str(CIRCUIT_PATH),
         "circuit_sha256": _sha256(CIRCUIT_PATH),
-        "stim_version": stim.__version__,
+        "stim_version": version("stim"),
         "seed": SEED,
         "num_shots": NUM_SHOTS,
         "operation": key.operation,

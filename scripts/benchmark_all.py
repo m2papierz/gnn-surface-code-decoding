@@ -58,7 +58,7 @@ import stim
 import torch
 from torch_geometric.data import Batch, Data
 
-from model.decoder import QECDecoder, build_model
+from model.decoder import QECDecoder, build_model, collate_graphs
 from model.ops import set_backend
 from sampling.graph import CircuitMetadata
 from sampling.profile import resolve_profile
@@ -127,7 +127,7 @@ def _make_pyg_batch(
     builder: Callable,
 ) -> Batch:
     graphs = [builder(s, metadata) for s in syndromes]
-    return Batch.from_data_list(
+    return collate_graphs(
         [
             Data(
                 x=torch.from_numpy(g.node_features),
@@ -135,8 +135,9 @@ def _make_pyg_batch(
                 edge_attr=torch.from_numpy(g.edge_features),
             )
             for g in graphs
-        ]
-    ).to(device)
+        ],
+        device,
+    )
 
 
 def _time_cuda(fn: Callable[[], object], n_iters: int) -> list[float]:
@@ -356,7 +357,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error_prob,
     )
     sampler = circuit.compile_detector_sampler(seed=args.seed)
-    syndromes = sampler.sample(shots=args.batch_size, bit_packed=False).astype(np.uint8)
+    dets, _ = sampler.sample(
+        shots=args.batch_size, separate_observables=True, bit_packed=False
+    )
+    syndromes = dets.astype(np.uint8)
 
     fired = syndromes.sum(axis=1)
     logger.info(

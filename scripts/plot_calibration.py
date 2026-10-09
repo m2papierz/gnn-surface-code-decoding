@@ -27,11 +27,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import stim
 import torch
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 
 from evaluation.calibration import expected_calibration_error, reliability_diagram
-from model.decoder import build_model
-from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
+from model.decoder import build_model, collate_graphs
+from sampling.graph import (
+    CircuitMetadata,
+    build_fired_detector_graph,
+    extract_circuit_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,7 @@ def _collect_logits(
     model: torch.nn.Module,
     syndromes: np.ndarray,
     observables: np.ndarray,
-    metadata: object,
+    metadata: CircuitMetadata,
     device: torch.device,
     batch_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -95,10 +99,10 @@ def _collect_logits(
         if not data_list:
             continue
 
-        batch = Batch.from_data_list(data_list).to(device)
+        batch = collate_graphs(data_list, device)
         with (
             torch.no_grad(),
-            torch.amp.autocast(
+            torch.autocast(
                 device_type=device.type,
                 enabled=use_amp,
                 dtype=torch.bfloat16,
@@ -138,9 +142,7 @@ def _load_model(
         dropout=0.0,
     ).to(device)
 
-    state = ckpt["model_state_dict"]
-    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-    model.load_state_dict(state)
+    model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
     return model, cfg, threshold

@@ -15,8 +15,9 @@ import pymatching
 import stim
 import torch
 from numpy.typing import NDArray
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 
+from model.decoder import collate_graphs
 from sampling.graph import CircuitMetadata
 from sampling.representation import SPATIAL_MEMORY, DataContract, resolve_builder
 
@@ -43,6 +44,21 @@ class Decoder(Protocol):
     def name(self) -> str: ...
 
     def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]: ...
+
+
+def _matched_observables(
+    matching: pymatching.Matching,
+    syndromes: NDArray[np.uint8],
+    num_observables: int,
+    *,
+    correlated: bool,
+) -> NDArray[np.uint8]:
+    """Decode a batch and keep the observable columns, as uint8."""
+    predictions = matching.decode_batch(syndromes, enable_correlations=correlated)
+    # Without ``return_weights`` PyMatching returns the predictions alone; its
+    # annotation is the union over both modes.
+    assert isinstance(predictions, np.ndarray)
+    return predictions[:, :num_observables].astype(np.uint8, copy=False)
 
 
 class PyMatchingDecoder:
@@ -77,8 +93,9 @@ class PyMatchingDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        predictions = self._matching.decode_batch(syndromes)
-        return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
+        return _matched_observables(
+            self._matching, syndromes, self._num_obs, correlated=False
+        )
 
 
 class CorrelatedMatchingDecoder:
@@ -125,8 +142,9 @@ class CorrelatedMatchingDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        predictions = self._matching.decode_batch(syndromes, enable_correlations=True)
-        return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
+        return _matched_observables(
+            self._matching, syndromes, self._num_obs, correlated=True
+        )
 
 
 class GNNDecoder:
@@ -159,13 +177,12 @@ class GNNDecoder:
         contract: DataContract = SPATIAL_MEMORY,
     ) -> None:
         version = contract.version
-        has_phased = metadata.phase_ids is not None
-        if version != "spatial" and not has_phased:
+        if version != "spatial" and metadata.layout is None:
             raise ValueError(
                 f"Contract requires representation {version!r} but the "
-                f"CircuitMetadata lacks phased fields (phase_ids, patch_ids, "
-                f"seam_mask). The eval set must carry the metadata its "
-                f"representation needs."
+                f"CircuitMetadata lacks phased fields: it carries no "
+                f"logical-operation layout. The eval set must carry the metadata "
+                f"its representation needs."
             )
         self._model = model
         self._metadata = metadata
@@ -227,11 +244,11 @@ class GNNDecoder:
             if not data_list:
                 continue
 
-            batch = Batch.from_data_list(data_list).to(self._device)
+            batch = collate_graphs(data_list, self._device)
 
             with (
                 torch.no_grad(),
-                torch.amp.autocast(
+                torch.autocast(
                     device_type=self._device.type,
                     enabled=use_amp,
                     dtype=torch.bfloat16,
@@ -427,7 +444,11 @@ class TesseractDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        predictions = self._decoder.decode_batch(syndromes.astype(np.bool_))
+        # The binding annotates ``ndarray[bool, ...]``, with ``bool`` in the shape
+        # slot; a boolean ``(N, D)`` array is what it decodes.
+        predictions = self._decoder.decode_batch(
+            syndromes.astype(np.bool_)  # pyright: ignore[reportArgumentType]
+        )
         return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
 
 

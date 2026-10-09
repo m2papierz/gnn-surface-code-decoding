@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
+from sampling.profile import resolve_profile
 
-@dataclass
+
+# YAML keys read into EvalConfig fields.
+_EVAL_KEYS: Final[tuple[str, ...]] = (
+    "operation",
+    "checkpoint",
+    "eval_root",
+    "circuit_dir",
+    "distances",
+    "error_probs",
+    "batch_size",
+    "include_belief_matching",
+    "include_tesseract",
+    "shots",
+    "seed",
+)
+
+# Fields holding a path; YAML and the CLI deliver them as strings.
+_EVAL_PATH_FIELDS: Final[tuple[str, ...]] = ("checkpoint", "eval_root", "circuit_dir")
+
+
+@dataclass(kw_only=True)
 class EvalConfig:
     """Configuration for GNN evaluation against classical baselines.
 
@@ -24,10 +46,10 @@ class EvalConfig:
     eval_root : Path
         Root of the frozen eval-set tree.  Eval sets are discovered
         under ``<eval_root>/<operation>/``.
-    circuit_dir : Path or None
+    circuit_dir : Path
         Circuit directory for sanity evaluation (fresh-sample mode).
-        If ``None`` (default), populated from the resolved profile's
-        ``circuit_root``.
+        :meth:`from_fields` fills it from the operation's profile when the
+        fields leave it out.
     distances : list of int or None
         Filter to these code distances.  ``None`` means all.
     error_probs : list of float or None
@@ -47,7 +69,7 @@ class EvalConfig:
     operation: str = "memory"
     checkpoint: Path | None = None
     eval_root: Path = Path("data/eval")
-    circuit_dir: Path | None = None
+    circuit_dir: Path
     distances: list[int] | None = None
     error_probs: list[float] | None = None
     batch_size: int = 256
@@ -57,12 +79,49 @@ class EvalConfig:
     seed: int = 99
 
     def __post_init__(self) -> None:
-        from sampling.profile import resolve_profile
+        resolve_profile(self.operation)  # rejects an unregistered operation
 
-        profile = resolve_profile(self.operation)
+    @staticmethod
+    def read_yaml_fields(path: str | Path) -> dict[str, Any]:
+        """Read a YAML config into field values, resolving nothing.
 
-        if self.circuit_dir is None:
-            self.circuit_dir = profile.circuit_root
+        Parameters
+        ----------
+        path : str or Path
+            Path to YAML config file.
+
+        Returns
+        -------
+        dict
+            Field name to raw value, for the fields the file sets.
+        """
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        return {key: raw[key] for key in _EVAL_KEYS if key in raw}
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Any]) -> EvalConfig:
+        """Build a config from field values, resolving what they leave out.
+
+        ``circuit_dir`` falls back to the circuit root of the operation the
+        fields name, so callers apply every override before calling this.
+
+        Parameters
+        ----------
+        fields : Mapping
+            Field name to value; path fields may be strings.
+
+        Returns
+        -------
+        EvalConfig
+        """
+        values = dict(fields)
+        for key in _EVAL_PATH_FIELDS:
+            if values.get(key) is not None:
+                values[key] = Path(values[key])
+        if values.get("circuit_dir") is None:
+            operation = values.get("operation", cls.operation)
+            values["circuit_dir"] = resolve_profile(operation).circuit_root
+        return cls(**values)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> EvalConfig:
@@ -77,28 +136,4 @@ class EvalConfig:
         -------
         EvalConfig
         """
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-
-        flat: dict[str, Any] = {}
-
-        for key in (
-            "operation",
-            "checkpoint",
-            "eval_root",
-            "circuit_dir",
-            "distances",
-            "error_probs",
-            "batch_size",
-            "include_belief_matching",
-            "include_tesseract",
-            "shots",
-            "seed",
-        ):
-            if key in raw:
-                flat[key] = raw[key]
-
-        for key in ("checkpoint", "eval_root", "circuit_dir"):
-            if key in flat and flat[key] is not None:
-                flat[key] = Path(flat[key])
-
-        return cls(**flat)
+        return cls.from_fields(cls.read_yaml_fields(path))

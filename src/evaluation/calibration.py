@@ -91,7 +91,7 @@ def reliability_diagram(
     if n_bins < 1:
         raise ValueError(f"n_bins must be >= 1, got {n_bins}")
 
-    labels = labels.astype(np.float64)
+    outcomes = labels.astype(np.float64)
     probs = _sigmoid(logits)
 
     bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
@@ -107,7 +107,7 @@ def reliability_diagram(
         bin_counts[b] = count
         if count > 0:
             bin_confidences[b] = probs[mask].mean()
-            bin_accuracies[b] = labels[mask].mean()
+            bin_accuracies[b] = outcomes[mask].mean()
 
     return ReliabilityDiagram(
         bin_confidences=bin_confidences,

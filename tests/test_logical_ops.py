@@ -15,6 +15,7 @@ import pytest
 import stim
 
 from sampling.experiment import circuit_manifest_path
+from sampling.graph import LogicalOperationLayout
 from sampling.logical_ops import (
     CircuitValidationError,
     PhaseWindow,
@@ -732,11 +733,11 @@ class TestLogicalOperationMetadataToCircuitMetadataFields:
             num_blocks=1,
             observables=("logical_observable",),
         )
-        fields = meta.to_circuit_metadata_fields(coords)
-        np.testing.assert_array_equal(fields["phase_ids"], [0, 0, 0])
-        assert fields["phase_names"] == ("memory",)
-        np.testing.assert_array_equal(fields["patch_ids"], [0, 0, 0])
-        np.testing.assert_array_equal(fields["seam_mask"], [False, False, False])
+        layout = meta.to_layout(coords)
+        np.testing.assert_array_equal(layout.phase_ids, [0, 0, 0])
+        assert layout.phase_names == ("memory",)
+        np.testing.assert_array_equal(layout.patch_ids, [0, 0, 0])
+        np.testing.assert_array_equal(layout.seam_mask, [False, False, False])
 
     def test_cnot_multi_phase(self) -> None:
         import numpy as np
@@ -764,11 +765,11 @@ class TestLogicalOperationMetadataToCircuitMetadataFields:
             num_blocks=2,
             observables=("obs_0", "obs_1"),
         )
-        fields = meta.to_circuit_metadata_fields(coords)
-        np.testing.assert_array_equal(fields["phase_ids"], [0, 1, 2, 3])
-        assert fields["phase_names"] == ("memory", "merge", "memory", "memory")
-        np.testing.assert_array_equal(fields["patch_ids"], [0, 1, 0, 1])
-        np.testing.assert_array_equal(fields["seam_mask"], [False, True, False, False])
+        layout = meta.to_layout(coords)
+        np.testing.assert_array_equal(layout.phase_ids, [0, 1, 2, 3])
+        assert layout.phase_names == ("memory", "merge", "memory", "memory")
+        np.testing.assert_array_equal(layout.patch_ids, [0, 1, 0, 1])
+        np.testing.assert_array_equal(layout.seam_mask, [False, True, False, False])
 
 
 class TestExtractLogicalOpCircuitMetadata:
@@ -796,18 +797,15 @@ class TestExtractLogicalOpCircuitMetadata:
             logical_op_metadata=lo_meta,
         )
         assert isinstance(cm, CircuitMetadata)
-        assert cm.phase_ids is not None
-        assert cm.phase_names is not None
-        assert cm.patch_ids is not None
-        assert cm.seam_mask is not None
-        assert cm.phase_ids.shape == (cm.num_detectors,)
-        assert cm.patch_ids.shape == (cm.num_detectors,)
-        assert cm.seam_mask.shape == (cm.num_detectors,)
-        assert cm.seam_mask.any()
+        assert cm.layout is not None
+        assert cm.layout.phase_ids.shape == (cm.num_detectors,)
+        assert cm.layout.patch_ids.shape == (cm.num_detectors,)
+        assert cm.layout.seam_mask.shape == (cm.num_detectors,)
+        assert cm.layout.seam_mask.any()
 
 
 class TestCircuitMetadataLogicalOpFields:
-    """CircuitMetadata optional logical-operation fields."""
+    """CircuitMetadata optional logical-operation layout."""
 
     def test_none_by_default(self) -> None:
         import numpy as np
@@ -822,10 +820,7 @@ class TestCircuitMetadataLogicalOpFields:
             num_detectors=1,
             dem_edge_weights=np.zeros((1, 1), dtype=np.float64),
         )
-        assert cm.phase_ids is None
-        assert cm.phase_names is None
-        assert cm.patch_ids is None
-        assert cm.seam_mask is None
+        assert cm.layout is None
 
     def test_all_set_valid(self) -> None:
         import numpy as np
@@ -839,28 +834,25 @@ class TestCircuitMetadataLogicalOpFields:
             rounds=3,
             num_detectors=2,
             dem_edge_weights=np.zeros((2, 2), dtype=np.float64),
-            phase_ids=np.array([0, 0], dtype=np.intp),
-            phase_names=("memory",),
-            patch_ids=np.array([0, 0], dtype=np.intp),
-            seam_mask=np.array([False, False], dtype=np.bool_),
+            layout=LogicalOperationLayout(
+                phase_ids=np.array([0, 0], dtype=np.intp),
+                phase_names=("memory",),
+                patch_ids=np.array([0, 0], dtype=np.intp),
+                seam_mask=np.array([False, False], dtype=np.bool_),
+            ),
         )
-        assert cm.phase_ids is not None
-        assert cm.phase_names == ("memory",)
+        assert cm.layout is not None
+        assert cm.layout.phase_names == ("memory",)
 
-    def test_partial_set_raises(self) -> None:
+    def test_layout_arrays_must_agree_in_length(self) -> None:
         import numpy as np
 
-        from sampling.graph import CircuitMetadata
-
-        coords = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
-        with pytest.raises(ValueError, match="all-or-nothing"):
-            CircuitMetadata(
-                detector_coords=coords,
-                distance=3,
-                rounds=3,
-                num_detectors=1,
-                dem_edge_weights=np.zeros((1, 1), dtype=np.float64),
-                phase_ids=np.array([0], dtype=np.intp),
+        with pytest.raises(ValueError, match="patch_ids shape"):
+            LogicalOperationLayout(
+                phase_ids=np.array([0, 0], dtype=np.intp),
+                phase_names=("memory",),
+                patch_ids=np.array([0], dtype=np.intp),
+                seam_mask=np.array([False, False], dtype=np.bool_),
             )
 
     def test_wrong_phase_ids_shape_raises(self) -> None:
@@ -876,10 +868,12 @@ class TestCircuitMetadataLogicalOpFields:
                 rounds=3,
                 num_detectors=2,
                 dem_edge_weights=np.zeros((2, 2), dtype=np.float64),
-                phase_ids=np.array([0], dtype=np.intp),
-                phase_names=("memory",),
-                patch_ids=np.array([0, 0], dtype=np.intp),
-                seam_mask=np.array([False, False], dtype=np.bool_),
+                layout=LogicalOperationLayout(
+                    phase_ids=np.array([0], dtype=np.intp),
+                    phase_names=("memory",),
+                    patch_ids=np.array([0], dtype=np.intp),
+                    seam_mask=np.array([False], dtype=np.bool_),
+                ),
             )
 
     def test_phase_id_out_of_range_raises(self) -> None:
@@ -895,8 +889,10 @@ class TestCircuitMetadataLogicalOpFields:
                 rounds=3,
                 num_detectors=1,
                 dem_edge_weights=np.zeros((1, 1), dtype=np.float64),
-                phase_ids=np.array([5], dtype=np.intp),
-                phase_names=("memory",),
-                patch_ids=np.array([0], dtype=np.intp),
-                seam_mask=np.array([False], dtype=np.bool_),
+                layout=LogicalOperationLayout(
+                    phase_ids=np.array([5], dtype=np.intp),
+                    phase_names=("memory",),
+                    patch_ids=np.array([0], dtype=np.intp),
+                    seam_mask=np.array([False], dtype=np.bool_),
+                ),
             )

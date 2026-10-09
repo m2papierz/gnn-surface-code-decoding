@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -10,6 +11,8 @@ from typing import Any, Final
 import numpy as np
 import torch
 import yaml
+
+from sampling.profile import resolve_profile
 
 
 # Backends that can carry a training run. ``model.ops`` also exposes ``cuda``;
@@ -26,7 +29,37 @@ _AMP_DTYPES: Final[dict[str, torch.dtype]] = {
 }
 
 
-@dataclass
+# Fields holding a path; YAML and the CLI deliver them as strings.
+_TRAIN_PATH_FIELDS: Final[tuple[str, ...]] = ("circuit_dir", "output_dir", "resume")
+
+# YAML keys read into TrainConfig fields: top-level, then per nested section.
+_TOP_LEVEL_KEYS: Final[tuple[str, ...]] = (
+    "operation",
+    "circuit_dir",
+    "output_dir",
+    "num_workers",
+    "max_grad_norm",
+    "patience",
+    "seed",
+    "backend",
+    "compile_mode",
+    "amp_dtype",
+    "focal_alpha",
+    "focal_gamma",
+    "sample_budget",
+    "val_interval_samples",
+    "val_size",
+    "warmup_fraction",
+    "include_p_feature",
+    "distances",
+)
+_SECTION_KEYS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("model", ("hidden_dim", "num_layers", "dropout")),
+    ("optimisation", ("lr", "weight_decay", "batch_size")),
+)
+
+
+@dataclass(kw_only=True)
 class TrainConfig:
     """Training hyperparameters for sample-budget training.
 
@@ -36,10 +69,10 @@ class TrainConfig:
         Operation name, resolved to an ``OperationProfile`` at
         construction.  Determines the circuit root, representation, and
         run-directory segment.
-    circuit_dir : Path or None
-        Directory containing committed ``.stim`` circuit files.  If
-        ``None`` (default), populated from the resolved profile's
-        ``circuit_root``.
+    circuit_dir : Path
+        Directory containing committed ``.stim`` circuit files.
+        :meth:`from_fields` fills it from the operation's profile when the
+        fields leave it out.
     output_dir : Path
         Directory for checkpoints and logs.
     hidden_dim : int
@@ -99,7 +132,7 @@ class TrainConfig:
     """
 
     operation: str = "memory"
-    circuit_dir: Path | None = None
+    circuit_dir: Path
     output_dir: Path = Path("outputs/runs")
     hidden_dim: int = 64
     num_layers: int = 4
@@ -124,58 +157,62 @@ class TrainConfig:
     include_p_feature: bool = False
     distances: list[int] | None = None
 
+    @staticmethod
+    def read_yaml_fields(path: str | Path) -> dict[str, Any]:
+        """Read a YAML config into field values, resolving nothing.
+
+        Parameters
+        ----------
+        path : str or Path
+            YAML file; its ``model`` and ``optimisation`` sections are
+            flattened into the fields they hold.
+
+        Returns
+        -------
+        dict
+            Field name to raw value, for the fields the file sets.
+        """
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        fields: dict[str, Any] = {
+            key: raw[key] for key in _TOP_LEVEL_KEYS if key in raw
+        }
+        for section, keys in _SECTION_KEYS:
+            nested = raw.get(section, {})
+            fields.update({key: nested[key] for key in keys if key in nested})
+        return fields
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Any]) -> TrainConfig:
+        """Build a config from field values, resolving what they leave out.
+
+        ``circuit_dir`` falls back to the circuit root of the operation the
+        fields name, so callers apply every override before calling this.
+
+        Parameters
+        ----------
+        fields : Mapping
+            Field name to value; path fields may be strings.
+
+        Returns
+        -------
+        TrainConfig
+        """
+        values = dict(fields)
+        for key in _TRAIN_PATH_FIELDS:
+            if values.get(key) is not None:
+                values[key] = Path(values[key])
+        if values.get("circuit_dir") is None:
+            operation = values.get("operation", cls.operation)
+            values["circuit_dir"] = resolve_profile(operation).circuit_root
+        return cls(**values)
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> TrainConfig:
         """Load configuration from a YAML file."""
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-
-        flat: dict[str, Any] = {}
-
-        for key in (
-            "operation",
-            "circuit_dir",
-            "output_dir",
-            "num_workers",
-            "max_grad_norm",
-            "patience",
-            "seed",
-            "backend",
-            "compile_mode",
-            "amp_dtype",
-            "focal_alpha",
-            "focal_gamma",
-            "sample_budget",
-            "val_interval_samples",
-            "val_size",
-            "warmup_fraction",
-            "include_p_feature",
-            "distances",
-        ):
-            if key in raw:
-                flat[key] = raw[key]
-
-        for key in ("hidden_dim", "num_layers", "dropout"):
-            if key in raw.get("model", {}):
-                flat[key] = raw["model"][key]
-
-        for key in ("lr", "weight_decay", "batch_size"):
-            if key in raw.get("optimisation", {}):
-                flat[key] = raw["optimisation"][key]
-
-        for key in ("circuit_dir", "output_dir"):
-            if key in flat:
-                flat[key] = Path(flat[key])
-
-        return cls(**flat)
+        return cls.from_fields(cls.read_yaml_fields(path))
 
     def __post_init__(self) -> None:
-        from sampling.profile import resolve_profile
-
-        profile = resolve_profile(self.operation)
-
-        if self.circuit_dir is None:
-            self.circuit_dir = profile.circuit_root
-
+        resolve_profile(self.operation)  # rejects an unregistered operation
         if self.sample_budget < 1:
             raise ValueError(f"sample_budget must be >= 1, got {self.sample_budget}")
         if self.val_interval_samples < 1:

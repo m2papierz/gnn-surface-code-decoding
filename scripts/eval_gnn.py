@@ -34,12 +34,12 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import pymatching
 import stim
 import torch
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 
 from decoders import (
     BeliefMatchingDecoder,
@@ -57,7 +57,7 @@ from evaluation.evaluator import (
     load_eval_set,
 )
 from evaluation.stats import wilson_interval
-from model.decoder import build_model
+from model.decoder import build_model, collate_graphs
 from sampling.graph import build_fired_detector_graph, extract_circuit_metadata
 from sampling.representation import DataContract
 from sampling.sampler import settings_from_circuit_dir
@@ -95,9 +95,7 @@ def _load_model(
         num_observables=contract.num_observables,
         dropout=0.0,
     ).to(device)
-    state = ckpt["model_state_dict"]
-    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-    model.load_state_dict(state)
+    model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
     logger.info(
@@ -420,19 +418,16 @@ def _evaluate_at_setting(
         Per-setting results with LER and Wilson intervals for both decoders.
     """
     circuit = stim.Circuit.from_file(str(circuit_path))
-    dem = circuit.detector_error_model(decompose_errors=True)
     meta = extract_circuit_metadata(circuit, distance, rounds)
-    matching = pymatching.Matching.from_detector_error_model(dem)
 
     sampler = circuit.compile_detector_sampler(seed=seed)
-    raw = sampler.sample(shots=n_shots, bit_packed=False, append_observables=True)
+    dets, obs = sampler.sample(
+        shots=n_shots, separate_observables=True, bit_packed=False
+    )
+    syndromes = dets.astype(np.uint8)
+    observables = obs.astype(np.uint8)
 
-    n_det = dem.num_detectors
-    n_obs = dem.num_observables
-    syndromes = raw[:, :n_det].astype(np.uint8)
-    observables = raw[:, n_det : n_det + n_obs].astype(np.uint8)
-
-    mwpm_pred = matching.decode_batch(syndromes)[:, :n_obs]
+    mwpm_pred = PyMatchingDecoder(circuit_path).decode_batch(syndromes)
     mwpm_errors = int(np.any(mwpm_pred != observables, axis=1).sum())
 
     model.eval()
@@ -448,22 +443,21 @@ def _evaluate_at_setting(
                 x=torch.from_numpy(graph.node_features),
                 edge_index=torch.from_numpy(graph.edge_index),
                 edge_attr=torch.from_numpy(graph.edge_features),
-                y=torch.from_numpy(observables[i].astype(np.float32)),
                 num_fired=torch.tensor(graph.num_fired, dtype=torch.long),
             )
             data_list.append(data)
 
-        batch = Batch.from_data_list(data_list).to(device)
+        batch = collate_graphs(data_list, device)
         with (
             torch.no_grad(),
-            torch.amp.autocast(
+            torch.autocast(
                 device_type=device.type, enabled=use_amp, dtype=torch.bfloat16
             ),
         ):
             logits = model(batch)
 
         pred = (logits > threshold).float()
-        target = batch.y.view_as(pred)
+        target = torch.from_numpy(observables[start:end]).to(device, pred.dtype)
         gnn_errors += int((pred != target).any(dim=1).sum().item())
 
     gnn_ler = gnn_errors / n_shots
@@ -492,7 +486,6 @@ def run_sanity(cfg: EvalConfig) -> list[dict]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _contract, threshold, ckpt = _load_model(cfg, device)
 
-    assert cfg.circuit_dir is not None
     settings = settings_from_circuit_dir(
         cfg.circuit_dir,
         distances=cfg.distances,
@@ -627,10 +620,9 @@ def parse_args(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    fields: dict[str, Any] = {}
     if args.config is not None and args.config.is_file():
-        cfg = EvalConfig.from_yaml(args.config)
-    else:
-        cfg = EvalConfig()
+        fields = EvalConfig.read_yaml_fields(args.config)
 
     field_map: dict[str, object] = {
         "operation": args.operation,
@@ -649,14 +641,7 @@ def parse_args(
     if args.tesseract:
         field_map["include_tesseract"] = True
 
-    cfg_dict = {f.name: getattr(cfg, f.name) for f in cfg.__dataclass_fields__.values()}
-    for key, value in field_map.items():
-        if value is not None:
-            cfg_dict[key] = value
-
-    for key in ("checkpoint", "eval_root", "circuit_dir"):
-        if key in cfg_dict and cfg_dict[key] is not None:
-            cfg_dict[key] = Path(cfg_dict[key])
+    fields.update({key: value for key, value in field_map.items() if value is not None})
 
     if args.dry_run:
         mode = "dry-run"
@@ -665,7 +650,7 @@ def parse_args(
     else:
         mode = "harness"
 
-    return EvalConfig(**cfg_dict), mode, args.output
+    return EvalConfig.from_fields(fields), mode, args.output
 
 
 def main(argv: Sequence[str] | None = None) -> None:

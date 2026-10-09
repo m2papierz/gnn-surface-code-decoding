@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import stim
 import torch
 
 from training import TrainConfig, Trainer
+
+
+MEMORY_CIRCUITS = Path("data/circuits/memory")
 
 
 @pytest.fixture()
@@ -145,21 +149,21 @@ class TestConfigValidation:
 
     def test_sample_budget_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="sample_budget"):
-            TrainConfig(sample_budget=0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, sample_budget=0)
 
     def test_val_interval_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="val_interval_samples"):
-            TrainConfig(val_interval_samples=0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, val_interval_samples=0)
 
     def test_val_size_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="val_size"):
-            TrainConfig(val_size=0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, val_size=0)
 
     def test_warmup_fraction_bounds(self) -> None:
         with pytest.raises(ValueError, match="warmup_fraction"):
-            TrainConfig(warmup_fraction=0.0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, warmup_fraction=0.0)
         with pytest.raises(ValueError, match="warmup_fraction"):
-            TrainConfig(warmup_fraction=1.0)
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, warmup_fraction=1.0)
 
     def test_cuda_backend_is_rejected(self) -> None:
         """The fast-path kernels are forward-only; training on them cannot work.
@@ -169,15 +173,21 @@ class TestConfigValidation:
         inference-only kernels into the training loop.
         """
         with pytest.raises(ValueError, match="inference-only"):
-            TrainConfig(backend="cuda")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="cuda")
 
     def test_unknown_backend_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="backend must be one of"):
-            TrainConfig(backend="tensorrt")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="tensorrt")
 
     def test_training_backends_are_accepted(self) -> None:
-        assert TrainConfig(backend="pytorch").backend == "pytorch"
-        assert TrainConfig(backend="compiled").backend == "compiled"
+        assert (
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="pytorch").backend
+            == "pytorch"
+        )
+        assert (
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, backend="compiled").backend
+            == "compiled"
+        )
 
     def test_cuda_backend_is_rejected_from_yaml(self, tmp_path) -> None:
         """YAML is the path the CLI's own `choices` guard does not cover."""
@@ -190,21 +200,31 @@ class TestConfigValidation:
     def test_misspelled_amp_dtype_is_rejected(self) -> None:
         """A typo used to resolve to bfloat16 while the log echoed the typo."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(amp_dtype="bflaot16")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="bflaot16")
 
     def test_torch_attribute_that_is_not_a_dtype_is_rejected(self) -> None:
         """getattr(torch, "nn") returns a module, which autocast cannot use."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(amp_dtype="nn")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="nn")
 
     def test_real_dtype_outside_the_amp_set_is_rejected(self) -> None:
         """float64 is a genuine dtype, and meaningless for autocast."""
         with pytest.raises(ValueError, match="amp_dtype must be one of"):
-            TrainConfig(amp_dtype="float64")
+            TrainConfig(circuit_dir=MEMORY_CIRCUITS, amp_dtype="float64")
 
     def test_amp_dtype_resolves_to_the_torch_dtype(self) -> None:
-        assert TrainConfig(amp_dtype="bfloat16").amp_torch_dtype is torch.bfloat16
-        assert TrainConfig(amp_dtype="float16").amp_torch_dtype is torch.float16
+        assert (
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="bfloat16"
+            ).amp_torch_dtype
+            is torch.bfloat16
+        )
+        assert (
+            TrainConfig(
+                circuit_dir=MEMORY_CIRCUITS, amp_dtype="float16"
+            ).amp_torch_dtype
+            is torch.float16
+        )
 
 
 class TestOperationConfig:
@@ -215,14 +235,16 @@ class TestOperationConfig:
             TrainConfig(operation="nonexistent_op", circuit_dir=".")
 
     def test_default_operation_is_memory(self) -> None:
-        cfg = TrainConfig()
+        cfg = TrainConfig(circuit_dir=MEMORY_CIRCUITS)
         assert cfg.operation == "memory"
 
     def test_circuit_dir_populated_from_profile(self) -> None:
-        from pathlib import Path
-
-        cfg = TrainConfig(operation="memory")
+        cfg = TrainConfig.from_fields({"operation": "memory"})
         assert cfg.circuit_dir == Path("data/circuits/memory")
+
+    def test_circuit_dir_follows_the_named_operation(self) -> None:
+        cfg = TrainConfig.from_fields({"operation": "zz_merge_split"})
+        assert cfg.circuit_dir == Path("data/circuits/zz_merge_split")
 
     def test_circuit_dir_override_preserved(self, circuit_dir) -> None:
         cfg = TrainConfig(operation="memory", circuit_dir=circuit_dir)

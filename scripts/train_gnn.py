@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import yaml
 
@@ -96,19 +96,17 @@ def parse_args(
 
     # Load YAML and detect curriculum
     curriculum_cfg: CurriculumConfig | None = None
-    if args.config is not None and args.config.is_file():
+    fields: dict[str, Any] = {}
+    if args.config.is_file():
         raw = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-        cfg = TrainConfig.from_yaml(args.config)
+        fields = TrainConfig.read_yaml_fields(args.config)
         if "curriculum" in raw:
             curriculum_cfg = CurriculumConfig.from_yaml(raw["curriculum"])
-    elif args.config is not None and not args.config.is_file():
+    else:
         logging.getLogger(__name__).warning(
             "Config file %s not found, using defaults",
             args.config,
         )
-        cfg = TrainConfig()
-    else:
-        cfg = TrainConfig()
 
     field_map = {
         "circuit_dir": args.circuit_dir,
@@ -134,18 +132,8 @@ def parse_args(
         "include_p_feature": args.include_p_feature,
     }
 
-    cfg_dict = {f.name: getattr(cfg, f.name) for f in cfg.__dataclass_fields__.values()}
-    for key, value in field_map.items():
-        if value is not None:
-            cfg_dict[key] = value
-
-    for key in ("circuit_dir", "output_dir"):
-        if key in cfg_dict and cfg_dict[key] is not None:
-            cfg_dict[key] = Path(cfg_dict[key])
-    if cfg_dict.get("resume") is not None:
-        cfg_dict["resume"] = Path(cfg_dict["resume"])
-
-    return TrainConfig(**cfg_dict), curriculum_cfg
+    fields.update({key: value for key, value in field_map.items() if value is not None})
+    return TrainConfig.from_fields(fields), curriculum_cfg
 
 
 def main(argv: Sequence[str] | None = None) -> None:

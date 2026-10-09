@@ -9,14 +9,21 @@ diagnostics - sees the same mechanisms through the same reading.
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import stim
 from numpy.typing import NDArray
 
 
-__all__ = ["DemMechanisms", "MechanismClass", "read_dem_mechanisms"]
+__all__ = [
+    "DemMechanisms",
+    "MechanismClass",
+    "error_instructions",
+    "read_dem_mechanisms",
+]
 
 
 class MechanismClass(enum.StrEnum):
@@ -121,6 +128,30 @@ class DemMechanisms:
         return masks
 
 
+def error_instructions(
+    dem: stim.DetectorErrorModel,
+) -> Iterator[tuple[float, list[stim.DemTarget]]]:
+    """Yield ``(probability, targets)`` per error instruction of the flattened model.
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Any detector error model; repeat blocks are unrolled.
+
+    Returns
+    -------
+    Iterator[tuple[float, list[stim.DemTarget]]]
+        One item per ``error`` instruction, in order.
+    """
+    for instruction in dem.flattened():
+        assert isinstance(instruction, stim.DemInstruction), "flattened has no blocks"
+        if instruction.type == "error":
+            # The stub's ``int`` targets belong to ``shift_detectors``; an error
+            # instruction targets only detectors, observables and separators.
+            targets = cast(list[stim.DemTarget], instruction.targets_copy())
+            yield instruction.args_copy()[0], targets
+
+
 def read_dem_mechanisms(dem: stim.DetectorErrorModel) -> DemMechanisms:
     """Read the error mechanisms of a decomposed detector error model.
 
@@ -138,11 +169,8 @@ def read_dem_mechanisms(dem: stim.DetectorErrorModel) -> DemMechanisms:
     component_counts: list[int] = []
     detectors: list[int] = []
     offsets: list[int] = [0]
-    for instruction in dem.flattened():
-        if instruction.type != "error":
-            continue
-        targets = instruction.targets_copy()
-        probabilities.append(instruction.args_copy()[0])
+    for probability, targets in error_instructions(dem):
+        probabilities.append(probability)
         component_counts.append(1 + sum(t.is_separator() for t in targets))
         detectors.extend(t.val for t in targets if t.is_relative_detector_id())
         offsets.append(len(detectors))

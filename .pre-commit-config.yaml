@@ -1,6 +1,10 @@
 default_language_version:
   python: python3.12
 
+# Frozen circuits, eval shards and manifests are generator output; their bytes
+# belong to the generator, never to a hook.
+exclude: ^data/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -10,16 +14,19 @@ repos:
       - id: check-yaml
       - id: check-toml
 
-  - repo: https://github.com/PyCQA/isort
-    rev: 7.0.0
+  # Delegates to the Makefile so the hook and the gate are one command, run by
+  # the ruff that uv.lock pins.
+  - repo: local
     hooks:
-      - id: isort
-        name: isort
-        args: ["--settings-path=pyproject.toml"]
-
-  - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: "25.12.0"
-    hooks:
-      - id: black
-        name: black
-        args: ["--config=pyproject.toml"]
+      - id: fmt
+        name: make fmt
+        entry: make fmt
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: lint
+        name: make lint
+        entry: make lint
+        language: system
+        pass_filenames: false
+        always_run: true

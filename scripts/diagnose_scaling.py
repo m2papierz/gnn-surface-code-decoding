@@ -29,11 +29,11 @@ import platform
 import shlex
 import sys
 from collections.abc import Mapping, Sequence
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pymatching
 import stim
 
 from decoders import CorrelatedMatchingDecoder, PyMatchingDecoder
@@ -193,9 +193,7 @@ def _provenance(argv: Sequence[str]) -> dict[str, Any]:
         "command": shlex.join(command),
         "versions": {
             "python": platform.python_version(),
-            "numpy": np.__version__,
-            "stim": stim.__version__,
-            "pymatching": pymatching.__version__,
+            **{name: version(name) for name in ("numpy", "stim", "pymatching")},
         },
     }
 

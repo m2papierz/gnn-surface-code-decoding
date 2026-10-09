@@ -37,6 +37,7 @@ from typing import Self
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn import LayerNorm as PygLayerNorm
 
 
 logger = logging.getLogger(__name__)
@@ -255,8 +256,8 @@ def edge_update_reference(
 def fused_norm_residual_dropout(
     x: torch.Tensor,
     residual: torch.Tensor,
-    norm: nn.Module,
-    dropout: nn.Module,
+    norm: nn.LayerNorm | PygLayerNorm,
+    dropout: nn.Dropout,
     training: bool,
 ) -> torch.Tensor:
     """Normalise, optionally drop, and add residual.
@@ -270,12 +271,12 @@ def fused_norm_residual_dropout(
         Input to normalise.
     residual : Tensor, shape ``(N, H)``
         Residual tensor to add after norm + dropout.
-    norm : nn.Module
-        Row-wise normalisation layer exposing ``weight``/``bias``:
-        ``nn.LayerNorm`` or ``torch_geometric.nn.LayerNorm(mode="node")``.
+    norm : nn.LayerNorm or torch_geometric.nn.LayerNorm
+        Row-wise normalisation layer: ``nn.LayerNorm`` or
+        ``torch_geometric.nn.LayerNorm(mode="node")``.
         The ``cuda`` backend normalises each row over its own channels, so a
         layer taking statistics across rows would not be equivalent.
-    dropout : nn.Module
+    dropout : nn.Dropout
         Dropout layer (used only when *training* is ``True``).
     training : bool
         Whether the model is in training mode.

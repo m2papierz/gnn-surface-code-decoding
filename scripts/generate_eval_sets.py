@@ -24,12 +24,13 @@ import hashlib
 import json
 import logging
 import time
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
-import pymatching
 import stim
 
+from decoders import CorrelatedMatchingDecoder, Decoder, PyMatchingDecoder
 from sampling.experiment import ExperimentKey
 from sampling.profile import resolve_profile
 from sampling.sampler import settings_from_circuit_dir
@@ -67,7 +68,7 @@ def _fired_count_stats(syndromes: np.ndarray) -> dict:
 def _fired_count_buckets(syndromes: np.ndarray, observables: np.ndarray) -> dict:
     """Analyze val-set composition: positives per fired-count bucket."""
     fired_counts = syndromes.sum(axis=1)
-    labels = observables.any(axis=1) if observables.ndim > 1 else observables.ravel()
+    labels = np.any(observables, axis=1)
 
     buckets = {
         "0_fired": (fired_counts == 0),
@@ -141,13 +142,11 @@ def generate_eval_set(
     error_prob = key.error_prob
 
     circuit = stim.Circuit.from_file(str(circuit_path))
-    dem = circuit.detector_error_model(decompose_errors=True)
-    use_correlations = sizing_baseline == "correlated"
-    matching = pymatching.Matching.from_detector_error_model(
-        dem, enable_correlations=use_correlations
+    baseline: Decoder = (
+        CorrelatedMatchingDecoder(circuit_path)
+        if sizing_baseline == "correlated"
+        else PyMatchingDecoder(circuit_path)
     )
-    n_det = dem.num_detectors
-    n_obs = dem.num_observables
 
     seed = stable_seed("eval", f"d={distance}", f"p={error_prob}", base=master_seed)
     sampler = circuit.compile_detector_sampler(seed=seed)
@@ -169,13 +168,13 @@ def generate_eval_set(
         remaining = shot_cap - shots_total
         n_batch = min(batch_size, remaining)
 
-        raw = sampler.sample(shots=n_batch, bit_packed=False, append_observables=True)
-        syndromes = raw[:, :n_det].astype(np.uint8)
-        observables = raw[:, n_det : n_det + n_obs].astype(np.uint8)
+        dets, obs = sampler.sample(
+            shots=n_batch, separate_observables=True, bit_packed=False
+        )
+        syndromes = dets.astype(np.uint8)
+        observables = obs.astype(np.uint8)
 
-        baseline_pred = matching.decode_batch(
-            syndromes, **({"enable_correlations": True} if use_correlations else {})
-        )[:, :n_obs]
+        baseline_pred = baseline.decode_batch(syndromes)
         batch_errors = int(np.any(baseline_pred != observables, axis=1).sum())
 
         syndrome_batches.append(syndromes)
@@ -199,9 +198,7 @@ def generate_eval_set(
     fired_stats = _fired_count_stats(all_syndromes)
     bucket_composition = _fired_count_buckets(all_syndromes, all_observables)
 
-    full_baseline_pred = matching.decode_batch(
-        all_syndromes, **({"enable_correlations": True} if use_correlations else {})
-    )[:, :n_obs]
+    full_baseline_pred = baseline.decode_batch(all_syndromes)
     verified_errors = int(np.any(full_baseline_pred != all_observables, axis=1).sum())
     assert verified_errors == baseline_errors_total, (
         f"Accumulated {baseline_errors_total} != verified {verified_errors}"
@@ -223,18 +220,19 @@ def generate_eval_set(
         "observables": all_observables,
         "detector_coords": metadata.detector_coords,
     }
-    if metadata.phase_ids is not None:
-        npz_arrays["phase_ids"] = metadata.phase_ids
-        npz_arrays["patch_ids"] = metadata.patch_ids
-        npz_arrays["seam_mask"] = metadata.seam_mask
+    layout = metadata.layout
+    if layout is not None:
+        npz_arrays["phase_ids"] = layout.phase_ids
+        npz_arrays["patch_ids"] = layout.patch_ids
+        npz_arrays["seam_mask"] = layout.seam_mask
 
-    np.savez_compressed(point_dir / "data.npz", **npz_arrays)
+    np.savez_compressed(point_dir / "data.npz", allow_pickle=False, **npz_arrays)
 
     positive_count = int(all_observables.any(axis=1).sum())
     manifest: dict = {
         "circuit_file": str(circuit_path),
         "circuit_sha256": _sha256(circuit_path),
-        "stim_version": stim.__version__,
+        "stim_version": version("stim"),
         "seed": seed,
         "master_seed": master_seed,
         "operation": key.operation,
@@ -242,8 +240,8 @@ def generate_eval_set(
         "rounds": rounds,
         "error_prob": error_prob,
         "num_shots": shots_total,
-        "num_detectors": n_det,
-        "num_observables": n_obs,
+        "num_detectors": circuit.num_detectors,
+        "num_observables": circuit.num_observables,
         "representation_version": profile.representation_version,
         "observable_names": list(profile.observable_names),
         "sizing_baseline": sizing_baseline,
@@ -263,8 +261,8 @@ def generate_eval_set(
             f" --baseline {sizing_baseline}"
         ),
     }
-    if metadata.phase_names is not None:
-        manifest["phase_names"] = list(metadata.phase_names)
+    if layout is not None:
+        manifest["phase_names"] = list(layout.phase_names)
 
     (point_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=False),

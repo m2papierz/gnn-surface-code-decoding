@@ -175,7 +175,6 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         worker_id = 0 if worker_info is None else worker_info.id
 
         worker_seed = stable_seed("worker", f"id={worker_id}", base=self.master_seed)
-        assert worker_seed is not None
         sampler = WorkerSampler(
             self.settings,
             worker_seed,

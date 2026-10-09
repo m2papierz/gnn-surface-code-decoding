@@ -24,6 +24,8 @@ from typing import Any, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 
@@ -91,7 +93,7 @@ def _apply_style() -> None:
     )
 
 
-def _save_figure(fig: plt.Figure, output_dir: Path, stem: str) -> Path:
+def _save_figure(fig: Figure, output_dir: Path, stem: str) -> Path:
     """Write *fig* as 300-dpi PNG and PDF, and return the PNG path."""
     output_dir.mkdir(parents=True, exist_ok=True)
     png_path = output_dir / f"{stem}.png"
@@ -359,7 +361,7 @@ def plot_ler_scaling_with_d(
 
 
 def _annotate_mcnemar(
-    ax: plt.Axes,
+    ax: Axes,
     points: list[dict[str, Any]],
 ) -> None:
     """Add McNemar significance markers above the curves at each p value."""

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -83,7 +83,7 @@ class CurriculumTrainer:
         self._best_path: Path
         self._stopped_early: bool = False
 
-        self._all_settings: list[CircuitSetting] = []
+        self._all_settings: Sequence[CircuitSetting] = ()
         self._per_distance_val: dict[int, list[Any]] = {}
         self._distance_weights: dict[int, float] = {}
 
@@ -166,7 +166,7 @@ class CurriculumTrainer:
 
             for batch in loader:
                 batch = batch.to(self._state.device)
-                with torch.amp.autocast(
+                with torch.autocast(
                     device_type=self._state.device.type,
                     enabled=use_amp,
                     dtype=self._state.amp_dtype,

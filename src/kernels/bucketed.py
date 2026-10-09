@@ -200,7 +200,7 @@ class BucketedGraphRunner:
 
         # Logits per graph, read from the head rather than assumed, so the
         # static buffers track num_observables instead of a hardcoded 1.
-        self.out_dim = model.head.mlp[-1].out_features
+        self.out_dim = model.head.num_observables
 
         self._buckets: dict[tuple[int, int], _BucketBuffers] = {}
         self._empty_output = torch.zeros(
