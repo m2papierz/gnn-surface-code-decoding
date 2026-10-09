@@ -33,14 +33,14 @@ Classical decoders tested:
     BP + matching (beliefmatching package), CPU, shot-by-shot.  Timed with
     ``time.perf_counter()``, same warmup and iteration count as GNN.
 
-Latency, not throughput, is the figure of merit: spec §9 frames this against
-µs-scale syndrome cycles, so the batch-1 row is the one that matters.
+Latency, not throughput, is the figure of merit: a real-time decoder keeps pace
+with µs-scale syndrome cycles, so the batch-1 row is the one that matters.
 
 Usage::
 
     uv run python scripts/benchmark_all.py --operation memory
     uv run python scripts/benchmark_all.py --operation zz_merge_split \\
-        --distance 3 --batch-size 128 -o outputs/results/ls17_latency.json
+        --distance 3 --batch-size 128 -o outputs/results/latency_zz_merge_split_d3.json
 """
 
 from __future__ import annotations

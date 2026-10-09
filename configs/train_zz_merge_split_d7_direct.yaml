@@ -1,6 +1,6 @@
 # ZZ merge-split d=7 training - per-distance model
 # Trains only on d=7 circuits across all 4 error probabilities.
-# Budget: 100M samples (2× memory d=7 ratio; declared in TASKS LS16c).
+# Budget: 100M samples (2× the memory d=7 budget).
 
 backend: "compiled"
 compile_mode: "default"

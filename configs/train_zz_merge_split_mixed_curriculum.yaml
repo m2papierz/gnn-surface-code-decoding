@@ -1,7 +1,7 @@
 # ZZ merge-split mixed-d curriculum training
 # Trains a single model through d=3 => d=3+5 => d=3+5+7 curriculum with
 # adaptive replay sampling proportional to LER gap to MWPM.
-# Budget: 130M total (2× memory curriculum ratio; declared in TASKS LS16c).
+# Budget: 130M total (2× the memory curriculum budget).
 
 backend: "compiled"
 compile_mode: "default"

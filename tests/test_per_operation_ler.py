@@ -1,7 +1,5 @@
 """Tests for per-operation LER: per-observable breakdown, metric policy gating,
 space-time convention, and observable names on EvalSet.
-
-Covers LS11 done-when items without modifying any existing test file.
 """
 
 from __future__ import annotations
@@ -439,9 +437,8 @@ class TestObservableNamesOnEvalSet:
 
 
 class TestMemoryResultBackwardCompat:
-    """A memory-track result serializes identically to before LS11,
-    except for the new fields (per_observable, space_time_convention,
-    observable_names) which are additive."""
+    """A memory-track result keeps its single-observable fields;
+    per_observable, space_time_convention and observable_names are additive."""
 
     def test_memory_result_has_per_round_ler(self) -> None:
         """Memory results still carry per_round_ler - policy includes it."""

@@ -2,7 +2,7 @@
 
 This document pre-registers the statistical decision rules for all evaluation
 runs in this project. It must be committed before the first full evaluation
-run (T13). No parameter in this document may be changed after evaluation
+run. No parameter in this document may be changed after evaluation
 begins without recording the change as a protocol amendment with justification.
 
 ---
@@ -91,7 +91,7 @@ size — not that the decoders are provably identical.
 | Frozen eval set target errors (under MWPM) | ≥ 400 | Comfortable power for detecting 10% relative LER differences |
 | Frozen eval set floor errors (under MWPM) | ≥ 100 | Absolute minimum for a valid comparison |
 
-Frozen eval sets (generated in T10) are sized per (d, p) point to meet the
+Frozen eval sets are sized per (d, p) point to meet the
 400-error target under MWPM. The set generation script will report the actual
 error count and flag any point below the 100-error floor.
 

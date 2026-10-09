@@ -54,7 +54,7 @@ from sampling.sampler import settings_from_circuit_dir
 logger = logging.getLogger(__name__)
 
 DEFAULT_EVAL_ROOT = Path("data/eval")
-DEFAULT_OUTPUT = Path("outputs/results/ls23_scaling_diagnostics.json")
+DEFAULT_OUTPUT = Path("outputs/results/scaling_diagnostics.json")
 
 
 def _verified_circuit_sha256(eval_set: EvalSet, eval_dir: Path) -> str:

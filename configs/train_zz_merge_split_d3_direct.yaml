@@ -1,6 +1,6 @@
-# ZZ merge-split d=3 training - L1 checkpoint
+# ZZ merge-split d=3 training - per-distance model
 # Single distance (d=3), single operation, direct trainer.
-# Budget: 10M samples (declared in TASKS_LATTICE_SURGERY.md LS15).
+# Budget: 10M samples.
 
 backend: "compiled"
 compile_mode: "default"

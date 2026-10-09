@@ -1,4 +1,4 @@
-"""Tests for representation-aware evaluation path (LS08a).
+"""Tests for the representation-aware evaluation path.
 
 Verifies that EvalSet carries CircuitMetadata, that the loader reads phased
 metadata from npz files, that GNNDecoder rejects mismatched representations,

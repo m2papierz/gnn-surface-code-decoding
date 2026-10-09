@@ -491,7 +491,7 @@ class TestSpatialBitIdentity:
 
 
 class TestPhasedBuilderResolution:
-    """Phased builder resolves through LS0a's mechanism."""
+    """Phased builder resolves through the representation registry."""
 
     def test_phased_descriptor_registered(self) -> None:
         desc = resolve_descriptor("phased")
