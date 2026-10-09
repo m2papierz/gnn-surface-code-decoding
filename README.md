@@ -70,7 +70,7 @@ uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --sanity
 uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --dry-run
 ```
 
-Record the scaling and baseline diagnostics of every frozen evaluation point - graph size, the detector error model's probability mass by mechanism class, MWPM against correlated matching, and which physical error rates are sub-threshold for each decoder:
+Record the scaling and baseline diagnostics of every frozen evaluation point - graph size, the flip rate of each logical observable, the detector error model's probability mass by mechanism class, MWPM against correlated matching, and which physical error rates are sub-threshold for each decoder:
 
 ```bash
 uv run scripts/diagnose_scaling.py           # writes outputs/results/scaling_diagnostics.json

@@ -1,10 +1,11 @@
 """Scaling and baseline diagnostics on frozen evaluation sets.
 
-Three measurements per experiment point - the size of the graphs its shots
-build, how the probability mass of its detector error model splits by
-mechanism class, and how two classical baselines score on every frozen shot -
-and one rule across points, defined in ``evaluation.distance_scaling``: for
-which physical error rates a decoder's logical error rate falls with distance.
+Four measurements per experiment point - the size of the graphs its shots
+build, how often each logical observable flips over them, how the probability
+mass of its detector error model splits by mechanism class, and how two
+classical baselines score on every frozen shot - and one rule across points,
+defined in ``evaluation.distance_scaling``: for which physical error rates a
+decoder's logical error rate falls with distance.
 
 Nothing here samples or reads a file, so every number is a function of the
 frozen shots and the circuit they came from.  The caller loads the sets and
@@ -39,6 +40,8 @@ from evaluation.stats import (
     MIN_ERRORS_PER_DECODER,
     EvalOutcome,
     McNemarResult,
+    WilsonInterval,
+    wilson_interval,
 )
 from sampling.dem import DemMechanisms, MechanismClass
 from sampling.experiment import ExperimentKey
@@ -51,11 +54,13 @@ __all__ = [
     "BaselineComparison",
     "DemMassSplit",
     "GraphSize",
+    "ObservableFlipRates",
     "PointDiagnostics",
     "classify_threshold",
     "compare_baselines",
     "dem_mass_split",
     "graph_size",
+    "observable_flip_rates",
     "report_to_dict",
 ]
 
@@ -130,6 +135,86 @@ def graph_size(syndromes: NDArray[np.uint8]) -> GraphSize:
         num_shots=syndromes.shape[0],
         fired_detectors=_distribution(fired),
         edges=_distribution(complete_graph_edge_count(fired)),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservableFlipRates:
+    """How often the logical observables flip over one frozen set.
+
+    A flip is the circuit's own outcome for a shot, before any decoder, so
+    these rates are the label balance every decoder is scored against.
+
+    Parameters
+    ----------
+    per_observable : dict[str, WilsonInterval]
+        Flip rate of each observable, keyed by name in the profile's order.
+    any_observable : WilsonInterval
+        Rate of shots in which at least one observable flips.
+    """
+
+    per_observable: dict[str, WilsonInterval]
+    any_observable: WilsonInterval
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return {
+            "per_observable": [
+                {"name": name, **_flip_rate_to_dict(rate)}
+                for name, rate in self.per_observable.items()
+            ],
+            "any_observable": _flip_rate_to_dict(self.any_observable),
+        }
+
+
+def _flip_rate_to_dict(rate: WilsonInterval) -> dict[str, Any]:
+    """Serialize one flip rate with its counts and Wilson interval."""
+    return {
+        "n_shots": rate.n_total,
+        "n_flips": rate.n_errors,
+        "rate": rate.point,
+        "rate_ci_95": [rate.lower, rate.upper],
+    }
+
+
+def observable_flip_rates(
+    observables: NDArray[np.uint8], observable_names: Sequence[str]
+) -> ObservableFlipRates:
+    """Count the observable flips of a set of shots.
+
+    Parameters
+    ----------
+    observables : ndarray, shape ``(N, O)``, uint8
+        True observable flips, ``N >= 1``.
+    observable_names : sequence of str
+        Name of each of the ``O`` columns, in column order.
+
+    Returns
+    -------
+    ObservableFlipRates
+        Exact over all ``N`` shots, each rate with its Wilson 95% interval.
+
+    Raises
+    ------
+    ValueError
+        If the number of names differs from the number of columns.
+    """
+    num_shots, num_observables = observables.shape
+    if num_observables != len(observable_names):
+        raise ValueError(
+            f"Shots carry {num_observables} observable column(s) but "
+            f"{len(observable_names)} name(s) were given: {list(observable_names)}"
+        )
+    flipped = observables.astype(np.bool_, copy=False)
+    flips = np.count_nonzero(flipped, axis=0)
+    return ObservableFlipRates(
+        per_observable={
+            name: wilson_interval(int(count), num_shots)
+            for name, count in zip(observable_names, flips, strict=True)
+        },
+        any_observable=wilson_interval(
+            int(np.count_nonzero(flipped.any(axis=1))), num_shots
+        ),
     )
 
 
@@ -348,6 +433,8 @@ class PointDiagnostics:
         Hash of the frozen syndromes and observables that were scored.
     graph : GraphSize
         Graph sizes over the frozen shots.
+    observable_flips : ObservableFlipRates
+        Observable flip rates over the frozen shots.
     dem : DemMassSplit
         Probability-mass split of the circuit's detector error model.
     baselines : BaselineComparison
@@ -359,6 +446,7 @@ class PointDiagnostics:
     circuit_sha256: str
     shots_sha256: str
     graph: GraphSize
+    observable_flips: ObservableFlipRates
     dem: DemMassSplit
     baselines: BaselineComparison
 
@@ -370,6 +458,7 @@ class PointDiagnostics:
             "circuit_sha256": self.circuit_sha256,
             "shots_sha256": self.shots_sha256,
             "graph": asdict(self.graph),
+            "observable_flips": self.observable_flips.to_dict(),
             "dem": asdict(self.dem),
             "baselines": self.baselines.to_dict(),
         }
@@ -425,6 +514,13 @@ def _rules() -> dict[str, Any]:
             "Counts are exact over every frozen shot. A graph is complete over "
             "the fired detectors, so a shot with N fired detectors has N*(N-1) "
             "directed edges under every registered representation."
+        ),
+        "observable_flips": (
+            "Counts are exact over every frozen shot. An observable flips in a "
+            "shot when the sampled circuit flips it, independent of any decoder; "
+            "any_observable counts shots with at least one flip and equals the "
+            "set manifest's positive_count. Every rate carries its Wilson 95% "
+            "interval and decides nothing."
         ),
         "dem": (
             "Mass is the sum of mechanism probabilities in the decomposed DEM. "

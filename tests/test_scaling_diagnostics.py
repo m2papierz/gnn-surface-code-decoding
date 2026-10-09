@@ -26,6 +26,7 @@ from evaluation.scaling_diagnostics import (
     compare_baselines,
     dem_mass_split,
     graph_size,
+    observable_flip_rates,
     report_to_dict,
 )
 from evaluation.stats import (
@@ -34,6 +35,7 @@ from evaluation.stats import (
     MIN_EXPECTED_CELL_COUNT,
     EvalOutcome,
     two_proportion_test,
+    wilson_interval,
 )
 from sampling.dem import MechanismClass, read_dem_mechanisms
 from sampling.experiment import ExperimentKey
@@ -114,6 +116,9 @@ def _point(distance: int, errors: dict[str, int], num_shots: int) -> PointDiagno
         circuit_sha256="0" * 64,
         shots_sha256="0" * 64,
         graph=graph_size(eval_set.syndromes),
+        observable_flips=observable_flip_rates(
+            eval_set.observables, ("logical_observable",)
+        ),
         dem=dem_mass_split(read_dem_mechanisms(stim.DetectorErrorModel(DEM_TEXT))),
         baselines=compare_baselines(
             eval_set,
@@ -211,6 +216,46 @@ class TestGraphSize:
             assert graph.edge_index.shape[1] == complete_graph_edge_count(
                 int(np.count_nonzero(syndrome))
             )
+
+
+class TestObservableFlipRates:
+    OBSERVABLES = np.array(
+        [[1, 0], [1, 1], [0, 0], [0, 1], [0, 0], [1, 0], [0, 0], [0, 0]],
+        dtype=np.uint8,
+    )
+
+    def test_hand_computed_counts_and_intervals(self) -> None:
+        flips = observable_flip_rates(self.OBSERVABLES, ("Z_0", "Z_1"))
+
+        # Z_0 flips in shots 0, 1, 5; Z_1 in shots 1, 3; some observable in
+        # shots 0, 1, 3, 5.
+        assert flips.per_observable == {
+            "Z_0": wilson_interval(3, 8),
+            "Z_1": wilson_interval(2, 8),
+        }
+        assert flips.any_observable == wilson_interval(4, 8)
+
+    def test_serializes_counts_rates_and_intervals_in_profile_order(self) -> None:
+        serialized = observable_flip_rates(self.OBSERVABLES, ("Z_1", "Z_0")).to_dict()
+        z0_interval = wilson_interval(2, 8)
+
+        assert [entry["name"] for entry in serialized["per_observable"]] == [
+            "Z_1",
+            "Z_0",
+        ]
+        assert serialized["per_observable"][1] == {
+            "name": "Z_0",
+            "n_shots": 8,
+            "n_flips": 2,
+            "rate": 0.25,
+            "rate_ci_95": [z0_interval.lower, z0_interval.upper],
+        }
+        assert serialized["any_observable"]["n_flips"] == 4
+        json.dumps(serialized, allow_nan=False)
+
+    def test_names_must_match_the_observable_columns(self) -> None:
+        with pytest.raises(ValueError, match="2 observable column.*1 name"):
+            observable_flip_rates(self.OBSERVABLES, ("Z_0",))
 
 
 class TestDemMassSplit:
@@ -517,6 +562,15 @@ class TestDiagnoseScalingScript:
         assert set(point["dem"]["classes"]) == {cls.value for cls in MechanismClass}
         assert 0.0 < point["dem"]["dem_weight_mass_share"] < 1.0
 
+        observables = np.load(CI_SHARD_DIR / "observables.npy")
+        flips = point["observable_flips"]
+        assert [entry["name"] for entry in flips["per_observable"]] == [
+            "logical_observable"
+        ]
+        assert flips["per_observable"][0]["n_flips"] == observables.sum()
+        assert flips["any_observable"]["n_shots"] == syndromes.shape[0]
+        assert flips["any_observable"]["n_flips"] == manifest["positive_count"]
+
         baselines = point["baselines"]
         assert set(baselines["decoders"]) == {"correlated", "mwpm"}
         assert all(
@@ -571,3 +625,16 @@ class TestDiagnoseScalingScript:
 
         with pytest.raises(ValueError, match="circuit discovery resolves"):
             self._run(script, eval_root, "--error-probs", "0.01")
+
+    def test_shots_not_holding_the_manifest_positive_count_fail_the_run(
+        self, script: dict[str, Any], eval_root: Path
+    ) -> None:
+        manifest_path = eval_root / "memory" / "d3_p0_0100" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["positive_count"] += 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="positive_count=42"):
+            self._run(script, eval_root, "--error-probs", "0.01")
+
+        assert not (eval_root / "diagnostics.json").exists()

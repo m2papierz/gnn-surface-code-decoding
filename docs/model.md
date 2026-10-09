@@ -200,7 +200,7 @@ See [`docs/eval_protocol.md`](eval_protocol.md) for the full pre-registered prot
 uv run scripts/diagnose_scaling.py
 ```
 
-Measures every frozen evaluation point without a model: fired detectors and edges per graph over all shots, the DEM's probability mass by mechanism class with the share `dem_weight` carries, and MWPM against correlated matching on every shot.  Across distances it applies the sub-threshold rule of `evaluation.distance_scaling` per operation and decoder.  The run samples nothing, so two runs write the same bytes; a committed circuit without a frozen set fails it.
+Measures every frozen evaluation point without a model: fired detectors and edges per graph over all shots, the flip rate of each observable and of any observable with its Wilson interval, the DEM's probability mass by mechanism class with the share `dem_weight` carries, and MWPM against correlated matching on every shot.  Across distances it applies the sub-threshold rule of `evaluation.distance_scaling` per operation and decoder.  The run samples nothing, so two runs write the same bytes; a committed circuit without a frozen set, or a set whose shots do not hold its manifest's `positive_count`, fails it.
 
 ## Dataset interface
 

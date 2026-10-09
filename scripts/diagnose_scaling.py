@@ -1,16 +1,18 @@
 """Record scaling and baseline diagnostics for every frozen evaluation point.
 
 For each operation, every committed circuit is matched to the frozen
-evaluation set sampled from it, and the point is measured three ways: the
-size of the graphs its shots build, how its detector error model's
-probability mass splits by mechanism class, and how MWPM and correlated
-matching score on every frozen shot.  Across points, the sub-threshold rule
-of ``evaluation.scaling_diagnostics`` is applied per operation and decoder.
+evaluation set sampled from it, and the point is measured four ways: the
+size of the graphs its shots build, how often each logical observable flips
+over them, how its detector error model's probability mass splits by
+mechanism class, and how MWPM and correlated matching score on every frozen
+shot.  Across points, the sub-threshold rule of
+``evaluation.scaling_diagnostics`` is applied per operation and decoder.
 
 The run is deterministic: it samples nothing, so the artifact is a function
 of the committed circuits, the frozen shots and the library versions it
-records.  A circuit without a frozen set, or a set whose circuit does not
-hash to what the set recorded, fails the run and no artifact is written.
+records.  A circuit without a frozen set, a set whose circuit does not hash
+to what the set recorded, or a set whose shots do not hold the positive count
+its manifest recorded fails the run and no artifact is written.
 
 Usage
 -----
@@ -39,15 +41,21 @@ import stim
 from decoders import CorrelatedMatchingDecoder, PyMatchingDecoder
 from evaluation.evaluator import EvalSet, discover_eval_sets, load_eval_set
 from evaluation.scaling_diagnostics import (
+    ObservableFlipRates,
     PointDiagnostics,
     compare_baselines,
     dem_mass_split,
     graph_size,
+    observable_flip_rates,
     report_to_dict,
 )
 from sampling.dem import read_dem_mechanisms
 from sampling.experiment import ExperimentKey
-from sampling.profile import registered_operations, resolve_profile
+from sampling.profile import (
+    OperationProfile,
+    registered_operations,
+    resolve_profile,
+)
 from sampling.sampler import settings_from_circuit_dir
 
 
@@ -57,14 +65,18 @@ DEFAULT_EVAL_ROOT = Path("data/eval")
 DEFAULT_OUTPUT = Path("outputs/results/scaling_diagnostics.json")
 
 
+def _manifest_field(eval_set: EvalSet, eval_dir: Path, name: str) -> Any:
+    """Read a field the set's manifest must record."""
+    if name not in eval_set.manifest:
+        raise ValueError(
+            f"Manifest missing required field {name!r}: {eval_dir / 'manifest.json'}"
+        )
+    return eval_set.manifest[name]
+
+
 def _verified_circuit_sha256(eval_set: EvalSet, eval_dir: Path) -> str:
     """Hash the set's circuit and require the hash the set's manifest recorded."""
-    if "circuit_sha256" not in eval_set.manifest:
-        raise ValueError(
-            f"Manifest missing required field 'circuit_sha256': "
-            f"{eval_dir / 'manifest.json'}"
-        )
-    recorded = eval_set.manifest["circuit_sha256"]
+    recorded = _manifest_field(eval_set, eval_dir, "circuit_sha256")
     actual = hashlib.sha256(Path(eval_set.circuit_file).read_bytes()).hexdigest()
     if actual != recorded:
         raise ValueError(
@@ -73,6 +85,22 @@ def _verified_circuit_sha256(eval_set: EvalSet, eval_dir: Path) -> str:
             f"tied to the bytes they were sampled from"
         )
     return actual
+
+
+def _verified_observable_flips(
+    eval_set: EvalSet, eval_dir: Path, profile: OperationProfile
+) -> ObservableFlipRates:
+    """Count the set's observable flips and require the manifest's positive count."""
+    flips = observable_flip_rates(eval_set.observables, profile.observable_names)
+    recorded = _manifest_field(eval_set, eval_dir, "positive_count")
+    counted = flips.any_observable.n_errors
+    if counted != recorded:
+        raise ValueError(
+            f"Eval set {eval_dir} holds {counted} shot(s) with an observable "
+            f"flip, but its manifest recorded positive_count={recorded}; the "
+            f"frozen shots are not the ones the manifest describes"
+        )
+    return flips
 
 
 def _shots_sha256(eval_set: EvalSet) -> str:
@@ -107,18 +135,20 @@ def _diagnose_point(
     circuit_path = circuits[key]
     circuit = stim.Circuit.from_file(str(circuit_path))
     dem = circuit.detector_error_model(decompose_errors=True)
+    profile = resolve_profile(key.operation)
     return PointDiagnostics(
         key=key,
         circuit_file=str(circuit_path),
         circuit_sha256=_verified_circuit_sha256(eval_set, eval_dir),
         shots_sha256=_shots_sha256(eval_set),
         graph=graph_size(eval_set.syndromes),
+        observable_flips=_verified_observable_flips(eval_set, eval_dir, profile),
         dem=dem_mass_split(read_dem_mechanisms(dem)),
         baselines=compare_baselines(
             eval_set,
             reference=CorrelatedMatchingDecoder(circuit_path),
             compared=PyMatchingDecoder(circuit_path),
-            profile=resolve_profile(key.operation),
+            profile=profile,
         ),
     )
 
