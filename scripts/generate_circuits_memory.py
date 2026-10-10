@@ -11,7 +11,6 @@ circuit and every number measured on the old one would lose its provenance.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 from importlib.metadata import version
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Final
 
 import stim
 
+from artifact_file import atomic_write, file_sha256
 from sampling.experiment import (
     ExperimentKey,
     circuit_manifest_path,
@@ -117,7 +117,7 @@ def circuit_provenance(circuit_path: Path, circuit: stim.Circuit) -> dict[str, o
         "family": FAMILY,
         "stim_version": version("stim"),
         "circuit_file": str(circuit_path),
-        "circuit_sha256": hashlib.sha256(circuit_path.read_bytes()).hexdigest(),
+        "circuit_sha256": file_sha256(circuit_path),
         "num_detectors": dem.num_detectors,
         "num_observables": dem.num_observables,
         "generation_command": GENERATION_COMMAND,
@@ -165,7 +165,8 @@ def main() -> None:
                 circuit = stim.Circuit.from_file(path)
             else:
                 circuit = generate_circuit(d, r, p)
-                circuit.to_file(path)
+                with atomic_write(path) as temp:
+                    circuit.to_file(temp)
                 generated += 1
                 logger.info("Generated %s", fname)
 

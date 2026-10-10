@@ -1,16 +1,18 @@
-# ZZ merge-split d=3 training - per-distance model
-# Single distance (d=3), single operation, direct trainer.
-# Budget: 10M samples.
+# Memory d=3 training - per-distance model
+# Trains on the d=3 circuits of every error probability in the memory root.
 
 backend: "compiled"
 compile_mode: "default"
 amp_dtype: "bfloat16"
 
 # Experiment
-operation: "zz_merge_split"
+operation: "memory"
 
-# Data paths
+# Root of the run directories; a run's directory is named by its config and circuits.
 output_dir: "./outputs/runs"
+
+# Distance filter
+distances: [3]
 
 # Model architecture
 model:
@@ -25,10 +27,10 @@ optimisation:
   batch_size: 128
 
 # Sample budget
-sample_budget: 10_000_000
+sample_budget: 5_000_000
 
-# Validate every 100k samples.
-val_interval_samples: 100_000
+# Validate every 50k samples for frequent monitoring.
+val_interval_samples: 50_000
 
 # Frozen validation set size.
 val_size: 10_000
@@ -36,7 +38,7 @@ val_size: 10_000
 # LR warmup fraction.
 warmup_fraction: 0.05
 
-# No p conditioning.
+# No p conditioning for per-distance training.
 include_p_feature: false
 
 # Data loading
@@ -45,11 +47,8 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping
+# Early stopping disabled: training spends the whole budget.
 patience: 0
-
-# Single distance
-distances: [3]
 
 # Reproducibility
 seed: 42

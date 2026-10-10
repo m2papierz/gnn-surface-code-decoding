@@ -1,7 +1,9 @@
 # ZZ merge-split d=5 evaluation - per-distance checkpoint
 
 operation: "zz_merge_split"
-checkpoint: "outputs/runs/zz_merge_split/d5/direct/best.pt"
+# The finished run of train_zz_merge_split_d5.yaml: its directory is named by
+# that config and its circuits, so this path changes whenever either does.
+checkpoint: "outputs/runs/zz_merge_split/d5/27bdfff7b3d6/best.pt"
 distances: [5]
 batch_size: 256
 

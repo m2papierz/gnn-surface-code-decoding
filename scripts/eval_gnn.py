@@ -9,26 +9,31 @@ Three modes:
 - **dry-run** (``--dry-run``): pipeline validation on the CI shard
   with a randomly initialized model (no GPU, no checkpoint).
 
+Every mode writes its report to ``-o`` as ``{metadata, points}``; the
+metadata names the mode, the device, the resolved config and the scored
+checkpoint by path and by the sha256 of the bytes that were loaded.
+
 Usage
 -----
     # Full evaluation from config
-    uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml
+    uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml \
+        -o outputs/results/eval_memory_d3.json
 
     # Sanity check on fresh samples
-    uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --sanity
+    uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --sanity \
+        -o outputs/results/sanity_memory_d3.json
 
     # Dry-run pipeline validation
-    uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --dry-run
+    uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --dry-run
 
     # Override checkpoint via CLI
-    uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml \
-        --checkpoint outputs/runs/memory/d3/direct/best.pt
+    uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml \
+        --checkpoint outputs/runs/memory/d3/<run_id>/best.pt
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -40,6 +45,7 @@ import numpy as np
 import stim
 import torch
 
+from artifact_file import write_json
 from decoders import (
     BeliefMatchingDecoder,
     CorrelatedMatchingDecoder,
@@ -52,10 +58,12 @@ from decoders import (
 )
 from evaluation.config import EvalConfig
 from evaluation.evaluator import (
+    EvalMode,
     EvalReport,
     discover_eval_sets,
     evaluate_point,
     load_eval_set,
+    report_metadata,
 )
 from evaluation.stats import wilson_interval
 from model.decoder import build_model
@@ -173,6 +181,7 @@ def _print_harness_results(report: EvalReport) -> None:
 def run_dry_run(cfg: EvalConfig) -> EvalReport:
     """Execute dry-run evaluation on one operation's CI shard."""
     shard_dir = CI_SHARD_ROOT / cfg.operation
+    device = torch.device("cpu")
     logger.info("DRY RUN: evaluating on CI shard (%s)", shard_dir)
 
     eval_set = load_eval_set(shard_dir)
@@ -200,7 +209,7 @@ def run_dry_run(cfg: EvalConfig) -> EvalReport:
         eval_set.circuit_metadata,
         contract=contract,
         threshold=0.0,
-        device=torch.device("cpu"),
+        device=device,
         batch_size=64,
     )
     mwpm_decoder = PyMatchingDecoder(Path(eval_set.circuit_file))
@@ -216,11 +225,9 @@ def run_dry_run(cfg: EvalConfig) -> EvalReport:
 
     return EvalReport(
         results=[result],
-        metadata={
-            "mode": "dry-run",
-            "eval_source": str(shard_dir),
-            "device": "cpu",
-        },
+        metadata=report_metadata(
+            EvalMode.DRY_RUN, cfg, source=shard_dir, checkpoint=None, device=device
+        ),
     )
 
 
@@ -243,13 +250,9 @@ def run_harness(cfg: EvalConfig) -> EvalReport:
     logger.info("Found %d eval sets", len(eval_dirs))
 
     report = EvalReport(
-        metadata={
-            "mode": "full",
-            "checkpoint": str(checkpoint.path),
-            "threshold": checkpoint.decision_threshold,
-            "device": str(device),
-            "samples_consumed": checkpoint.samples_consumed,
-        },
+        metadata=report_metadata(
+            EvalMode.HARNESS, cfg, source=eval_dir, checkpoint=checkpoint, device=device
+        )
     )
 
     for ed in eval_dirs:
@@ -374,8 +377,15 @@ def _evaluate_at_setting(
     }
 
 
-def run_sanity(cfg: EvalConfig) -> list[dict]:
-    """Execute sanity evaluation on fresh Stim samples."""
+def run_sanity(cfg: EvalConfig) -> dict[str, Any]:
+    """Execute sanity evaluation on fresh Stim samples.
+
+    Returns
+    -------
+    dict
+        The report: ``metadata`` (:func:`report_metadata`) and one ``points``
+        row per setting.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = _load_checkpoint(cfg, device)
 
@@ -391,27 +401,21 @@ def run_sanity(cfg: EvalConfig) -> list[dict]:
     results = []
     for s in settings:
         logger.info(
-            "Evaluating d=%d r=%d p=%.4f ...",
-            s.distance,
-            s.rounds,
-            s.error_prob,
+            "Evaluating d=%d r=%d p=%.4f ...", s.distance, s.rounds, s.error_prob
         )
-        r = _evaluate_at_setting(s, checkpoint, cfg, device)
-        results.append(r)
-        parity = "PASS" if r["gnn_le_mwpm"] else "FAIL"
-        logger.info(
-            "  GNN LER=%.6f [%.6f, %.6f]  MWPM LER=%.6f [%.6f, %.6f]  %s",
-            r["gnn_ler"],
-            r["gnn_ci_95"][0],
-            r["gnn_ci_95"][1],
-            r["mwpm_ler"],
-            r["mwpm_ci_95"][0],
-            r["mwpm_ci_95"][1],
-            parity,
-        )
+        results.append(_evaluate_at_setting(s, checkpoint, cfg, device))
 
     _print_sanity_results(results, cfg, checkpoint)
-    return results
+    return {
+        "metadata": report_metadata(
+            EvalMode.SANITY,
+            cfg,
+            source=cfg.circuit_dir,
+            checkpoint=checkpoint,
+            device=device,
+        ),
+        "points": results,
+    }
 
 
 def _print_sanity_results(
@@ -448,15 +452,14 @@ def _print_sanity_results(
 
 def parse_args(
     argv: Sequence[str] | None = None,
-) -> tuple[EvalConfig, str, Path | None]:
+) -> tuple[EvalConfig, EvalMode, Path | None]:
     """Parse CLI arguments into an :class:`EvalConfig`.
 
     CLI args override values loaded from YAML config.
 
     Returns
     -------
-    tuple of (EvalConfig, mode, output path)
-        mode is one of ``"harness"``, ``"sanity"``, ``"dry-run"``.
+    tuple of (EvalConfig, EvalMode, output path)
     """
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -526,11 +529,11 @@ def parse_args(
     fields.update({key: value for key, value in field_map.items() if value is not None})
 
     if args.dry_run:
-        mode = "dry-run"
+        mode = EvalMode.DRY_RUN
     elif args.sanity:
-        mode = "sanity"
+        mode = EvalMode.SANITY
     else:
-        mode = "harness"
+        mode = EvalMode.HARNESS
 
     return EvalConfig.from_fields(fields), mode, args.output
 
@@ -539,29 +542,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for GNN evaluation."""
     cfg, mode, output = parse_args(argv)
 
-    if mode == "dry-run":
-        report = run_dry_run(cfg)
-        _print_harness_results(report)
+    if mode is EvalMode.SANITY:
+        sanity_report = run_sanity(cfg)
         if output is not None:
-            report.save(output)
+            write_json(output, sanity_report)
             logger.info("Results saved to %s", output)
+        return
 
-    elif mode == "sanity":
-        results = run_sanity(cfg)
-        out_path = output
-        if out_path is None and cfg.checkpoint is not None:
-            out_path = cfg.checkpoint.parent / "eval_sanity.json"
-        if out_path is not None:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-            print(f"\nResults saved to {out_path}")
-
-    else:
-        report = run_harness(cfg)
-        _print_harness_results(report)
-        if output is not None:
-            report.save(output)
-            logger.info("Results saved to %s", output)
+    report = run_dry_run(cfg) if mode is EvalMode.DRY_RUN else run_harness(cfg)
+    _print_harness_results(report)
+    if output is not None:
+        report.save(output)
+        logger.info("Results saved to %s", output)
 
 
 if __name__ == "__main__":

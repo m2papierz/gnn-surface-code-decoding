@@ -7,11 +7,16 @@ McNemar significance annotations for the GNN-vs-MWPM paired comparison.
 Fig. 2 - LER vs code distance at a fixed p, with Wilson 95% error bars.  The
 reference p defaults to the median of the p values common to every distance.
 
+Each figure reads one ``eval_gnn.py`` harness report per distance; a report
+holds the points of one distance.
+
 Examples
 --------
-    uv run python scripts/plot_results.py
-    uv run python scripts/plot_results.py --eval-dir outputs -o outputs/figures
-    uv run python scripts/plot_results.py --reference-p 0.005
+    uv run python scripts/plot_results.py --reports \
+        outputs/results/eval_memory_d3.json \
+        outputs/results/eval_memory_d5.json \
+        outputs/results/eval_memory_d7.json
+    uv run python scripts/plot_results.py --reports ... --reference-p 0.005
 """
 
 from __future__ import annotations
@@ -19,8 +24,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,15 +34,10 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
+from artifact_file import atomic_write
+
 
 logger = logging.getLogger(__name__)
-
-_DISTANCES: list[int] = [3, 5, 7]
-_EVAL_FILES: dict[int, str] = {
-    3: "runs/memory/d3/direct/eval.json",
-    5: "runs/memory/d5/direct/eval.json",
-    7: "runs/memory/d7/direct/eval.json",
-}
 
 _DECODER_KEYS: list[str] = ["gnn", "mwpm", "belief_matching"]
 _DECODER_LABELS: dict[str, str] = {
@@ -58,10 +59,39 @@ _DECODER_MARKERS: dict[str, str] = {
 _MCNEMAR_ALPHA: float = 0.05
 
 
-def _load_eval(path: Path) -> list[dict[str, Any]]:
-    """Load evaluation JSON and return the list of point results."""
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data["points"]
+def load_reports(paths: Sequence[Path]) -> dict[int, list[dict[str, Any]]]:
+    """Read harness reports into their points, keyed by distance.
+
+    Parameters
+    ----------
+    paths : sequence of Path
+        One report per distance.
+
+    Returns
+    -------
+    dict
+        Distance to that report's points, in ascending distance.
+
+    Raises
+    ------
+    ValueError
+        If a report holds no points or several distances, or two reports
+        hold the same distance.
+    """
+    points_by_d: dict[int, list[dict[str, Any]]] = {}
+    for path in paths:
+        points = json.loads(path.read_text(encoding="utf-8"))["points"]
+        distances = {pt["distance"] for pt in points}
+        if len(distances) != 1:
+            raise ValueError(
+                f"Report {path} must hold the points of one distance, "
+                f"holds {sorted(distances)}"
+            )
+        (d,) = distances
+        if d in points_by_d:
+            raise ValueError(f"Two reports hold distance {d}; {path} is the second")
+        points_by_d[d] = points
+    return dict(sorted(points_by_d.items()))
 
 
 def _significance_stars(p_value: float) -> str:
@@ -91,12 +121,13 @@ def _apply_style() -> None:
 
 def _save_figure(fig: Figure, output_dir: Path, stem: str) -> Path:
     """Write *fig* as 300-dpi PNG and PDF, and return the PNG path."""
-    output_dir.mkdir(parents=True, exist_ok=True)
     png_path = output_dir / f"{stem}.png"
     pdf_path = output_dir / f"{stem}.pdf"
 
-    fig.savefig(png_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(pdf_path, bbox_inches="tight", facecolor="white")
+    with atomic_write(png_path) as temp:
+        fig.savefig(temp, dpi=300, bbox_inches="tight", facecolor="white")
+    with atomic_write(pdf_path) as temp:
+        fig.savefig(temp, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
     logger.info("Saved %s", png_path)
@@ -104,14 +135,15 @@ def _save_figure(fig: Figure, output_dir: Path, stem: str) -> Path:
     return png_path
 
 
-def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
+def plot_ler_vs_p(
+    points_by_d: Mapping[int, list[dict[str, Any]]], output_dir: Path
+) -> Path:
     """Produce Fig. 1 and save to output_dir as PNG (300 dpi) and PDF.
 
     Parameters
     ----------
-    eval_dir : Path
-        Root directory containing ``runs/memory/d{3,5,7}/direct/eval.json``
-        per-distance evaluation results.
+    points_by_d : Mapping
+        Each distance's report points (:func:`load_reports`), one panel each.
     output_dir : Path
         Directory for the output figure files.
 
@@ -124,17 +156,13 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
 
     fig, axes = plt.subplots(
         1,
-        3,
+        len(points_by_d),
         figsize=(13, 4.5),
         sharey=False,
+        squeeze=False,
     )
 
-    for ax, d in zip(axes, _DISTANCES, strict=True):
-        eval_path = eval_dir / _EVAL_FILES[d]
-        if not eval_path.is_file():
-            raise FileNotFoundError(f"Eval file not found: {eval_path}")
-
-        points = _load_eval(eval_path)
+    for ax, (d, points) in zip(axes[0], points_by_d.items(), strict=True):
         p_values = np.array([pt["error_prob"] for pt in points])
 
         for key in _DECODER_KEYS:
@@ -170,7 +198,7 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
         margin = (p_values[-1] - p_values[0]) * 0.12
         ax.set_xlim(p_values[0] - margin, p_values[-1] + margin)
 
-    axes[0].set_ylabel("Logical error rate (LER)", fontsize=10)
+    axes[0][0].set_ylabel("Logical error rate (LER)", fontsize=10)
 
     handles = [
         Line2D(
@@ -215,7 +243,7 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
 
 
 def plot_ler_scaling_with_d(
-    eval_dir: Path,
+    points_by_d: Mapping[int, list[dict[str, Any]]],
     output_dir: Path,
     *,
     reference_p: float | None = None,
@@ -227,8 +255,8 @@ def plot_ler_scaling_with_d(
 
     Parameters
     ----------
-    eval_dir : Path
-        Root directory containing the per-distance evaluation JSONs.
+    points_by_d : Mapping
+        Each distance's report points (:func:`load_reports`).
     output_dir : Path
         Directory for the output figure files.
     reference_p : float or None
@@ -243,19 +271,11 @@ def plot_ler_scaling_with_d(
 
     Raises
     ------
-    FileNotFoundError
-        If a per-distance evaluation JSON is missing.
     ValueError
         If no single p value was evaluated at every distance.
     """
     _apply_style()
-
-    points_by_d: dict[int, list[dict[str, Any]]] = {}
-    for d in _DISTANCES:
-        eval_path = eval_dir / _EVAL_FILES[d]
-        if not eval_path.is_file():
-            raise FileNotFoundError(f"Eval file not found: {eval_path}")
-        points_by_d[d] = _load_eval(eval_path)
+    distances = list(points_by_d)
 
     # Only p values common to every distance give a comparable slice.
     shared_p = set.intersection(
@@ -264,7 +284,7 @@ def plot_ler_scaling_with_d(
     if not shared_p:
         raise ValueError(
             "no physical error probability was evaluated at every distance "
-            f"{_DISTANCES}, so no scaling slice is comparable"
+            f"{distances}, so no scaling slice is comparable"
         )
 
     available = sorted(shared_p)
@@ -276,8 +296,8 @@ def plot_ler_scaling_with_d(
     fig, ax = plt.subplots(figsize=(5.5, 4.5))
 
     for key in _DECODER_KEYS:
-        distances, lers, lo, hi = [], [], [], []
-        for d in _DISTANCES:
+        sliced, lers, lo, hi = [], [], [], []
+        for d in distances:
             match = next(
                 (pt for pt in points_by_d[d] if pt["error_prob"] == reference_p),
                 None,
@@ -285,17 +305,17 @@ def plot_ler_scaling_with_d(
             if match is None:
                 continue
             entry = match["decoders"][key]
-            distances.append(d)
+            sliced.append(d)
             lers.append(entry["ler"])
             lo.append(entry["ler_ci_95"][0])
             hi.append(entry["ler_ci_95"][1])
 
-        if not distances:
+        if not sliced:
             continue
 
         lers_arr = np.array(lers)
         ax.errorbar(
-            distances,
+            sliced,
             lers_arr,
             yerr=[lers_arr - np.array(lo), np.array(hi) - lers_arr],
             label=_DECODER_LABELS[key],
@@ -315,7 +335,7 @@ def plot_ler_scaling_with_d(
     ax.set_title(
         f"LER scaling at $p = {reference_p:g}$", fontsize=12, fontweight="bold"
     )
-    ax.set_xticks(_DISTANCES)
+    ax.set_xticks(distances)
     ax.tick_params(axis="both", labelsize=9)
     ax.grid(True, which="major", ls="-", alpha=0.15, color="#000000")
     ax.grid(True, which="minor", ls=":", alpha=0.08, color="#000000")
@@ -376,10 +396,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--eval-dir",
+        "--reports",
         type=Path,
-        default=Path("outputs"),
-        help="Root directory with runs/memory/d{3,5,7}/direct/eval.json.",
+        nargs="+",
+        required=True,
+        help="eval_gnn.py harness reports, one per distance.",
     )
     parser.add_argument(
         "-o",
@@ -408,10 +429,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    plot_ler_vs_p(args.eval_dir, args.output_dir)
-    plot_ler_scaling_with_d(
-        args.eval_dir, args.output_dir, reference_p=args.reference_p
-    )
+    points_by_d = load_reports(args.reports)
+    plot_ler_vs_p(points_by_d, args.output_dir)
+    plot_ler_scaling_with_d(points_by_d, args.output_dir, reference_p=args.reference_p)
 
 
 if __name__ == "__main__":

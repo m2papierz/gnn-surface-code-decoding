@@ -22,8 +22,6 @@ Usage
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import time
 from importlib.metadata import version
@@ -32,6 +30,7 @@ from pathlib import Path
 import numpy as np
 import stim
 
+from artifact_file import atomic_write, file_sha256, write_json
 from decoders import CorrelatedMatchingDecoder, Decoder, PyMatchingDecoder
 from sampling.experiment import ExperimentKey
 from sampling.profile import resolve_profile
@@ -46,10 +45,6 @@ MASTER_SEED = 20240601
 BATCH_SIZE = 50_000
 TARGET_ERRORS = 400
 SHOT_CAP = 1_000_000
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _fired_count_stats(syndromes: np.ndarray) -> dict:
@@ -214,18 +209,18 @@ def generate_eval_set(
 
     p_str = f"{error_prob:.4f}".replace(".", "_")
     point_dir = output_root / key.operation / f"d{distance}_p{p_str}"
-    point_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        point_dir / "data.npz",
-        allow_pickle=False,
-        syndromes=all_syndromes,
-        observables=all_observables,
-    )
+    with atomic_write(point_dir / "data.npz") as temp:
+        np.savez_compressed(
+            temp,
+            allow_pickle=False,
+            syndromes=all_syndromes,
+            observables=all_observables,
+        )
 
     positive_count = int(all_observables.any(axis=1).sum())
     manifest: dict = {
         "circuit_file": str(circuit_path),
-        "circuit_sha256": _sha256(circuit_path),
+        "circuit_sha256": file_sha256(circuit_path),
         "stim_version": version("stim"),
         "seed": seed,
         "master_seed": master_seed,
@@ -254,10 +249,7 @@ def generate_eval_set(
         ),
     }
 
-    (point_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=False),
-        encoding="utf-8",
-    )
+    write_json(point_dir / "manifest.json", manifest)
 
     met_str = "MET" if manifest["target_met"] else "BELOW TARGET"
     logger.info(

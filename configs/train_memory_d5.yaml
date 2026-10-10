@@ -1,5 +1,5 @@
-# d=5 training - per-distance model
-# Trains only on d=5 circuits across all 4 error probabilities.
+# Memory d=5 training - per-distance model
+# Trains on the d=5 circuits of every error probability in the memory root.
 
 backend: "compiled"
 compile_mode: "default"
@@ -8,7 +8,7 @@ amp_dtype: "bfloat16"
 # Experiment
 operation: "memory"
 
-# Data paths
+# Root of the run directories; a run's directory is named by its config and circuits.
 output_dir: "./outputs/runs"
 
 # Distance filter
@@ -47,7 +47,7 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping
+# Early stopping disabled: training spends the whole budget.
 patience: 0
 
 # Reproducibility

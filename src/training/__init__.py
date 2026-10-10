@@ -8,16 +8,18 @@ from training.primitives import (
     compute_val_metrics,
     load_checkpoint,
     make_streaming_loader,
-    resolve_run_dir,
     sweep_threshold,
     train_step,
     write_checkpoint,
 )
+from training.run import RunDirectoryError, RunSpec, resolve_run_dir
 from training.trainer import Trainer
 
 
 __all__ = [
     "FocalBCEWithLogitsLoss",
+    "RunDirectoryError",
+    "RunSpec",
     "TrainConfig",
     "Trainer",
     "TrainingState",

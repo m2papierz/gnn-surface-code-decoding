@@ -9,7 +9,7 @@ annotation.
 Usage
 -----
     uv run python scripts/plot_calibration.py \
-        --checkpoint outputs/runs/memory/d3/direct/best.pt \
+        --checkpoint outputs/runs/memory/d3/<run_id>/best.pt \
         --distance 3 \
         --eval-dir data/eval/memory \
         --circuit-dir data/circuits/memory \
@@ -29,6 +29,7 @@ import stim
 import torch
 from torch_geometric.data import Data
 
+from artifact_file import atomic_write
 from evaluation.calibration import expected_calibration_error, reliability_diagram
 from model.decoder import build_model, collate_graphs
 from sampling.graph import (
@@ -210,8 +211,8 @@ def _plot_reliability(
         fontsize=12,
     )
     fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    with atomic_write(output_path) as temp:
+        fig.savefig(temp, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved %s", output_path)
 

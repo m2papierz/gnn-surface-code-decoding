@@ -1,11 +1,16 @@
-"""Reading a YAML config file into the field values it sets."""
+"""Config files: a YAML file read into field values, a config record as JSON."""
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 
 def read_config_fields(
@@ -59,6 +64,26 @@ def read_config_fields(
             f"accepted keys are {sorted(accepted)}"
         )
     return fields
+
+
+def config_fields(config: DataclassInstance) -> dict[str, Any]:
+    """The field values of a config record as JSON values; a path becomes its text.
+
+    Parameters
+    ----------
+    config : dataclass instance
+        A config record (``TrainConfig``, ``EvalConfig``).
+
+    Returns
+    -------
+    dict
+        Field name to value, in field order.
+    """
+    values = {field.name: getattr(config, field.name) for field in fields(config)}
+    return {
+        name: str(value) if isinstance(value, Path) else value
+        for name, value in values.items()
+    }
 
 
 def _require_mapping(

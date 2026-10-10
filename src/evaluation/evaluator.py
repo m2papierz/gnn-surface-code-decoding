@@ -11,17 +11,20 @@ shot budget is exhausted.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
-from decoders import Decoder
+from artifact_file import write_json
+from decoders import Decoder, GNNCheckpoint
+from evaluation.config import EvalConfig
 from evaluation.stats import (
     CHECK_INTERVAL,
     EvalOutcome,
@@ -269,6 +272,61 @@ class EvalPointResult:
         return self.key.error_prob
 
 
+class EvalMode(StrEnum):
+    """How a report's numbers were produced."""
+
+    HARNESS = "harness"
+    SANITY = "sanity"
+    DRY_RUN = "dry-run"
+
+
+def report_metadata(
+    mode: EvalMode,
+    cfg: EvalConfig,
+    *,
+    source: Path,
+    checkpoint: GNNCheckpoint | None,
+    device: torch.device,
+) -> dict[str, Any]:
+    """What produced a report: mode, shots, resolved config, checkpoint, device.
+
+    Parameters
+    ----------
+    mode : EvalMode
+        The evaluation mode.
+    cfg : EvalConfig
+        The resolved config, every CLI override applied.
+    source : Path
+        Where the scored shots came from: the frozen eval sets' root, the
+        circuit root fresh shots were sampled from, or the CI shard.
+    checkpoint : GNNCheckpoint or None
+        The scored checkpoint; ``None`` for a dry run's untrained model.
+    device : torch.device
+        Device the GNN ran on.
+
+    Returns
+    -------
+    dict
+        JSON-ready metadata; the checkpoint is named by path and by the
+        sha256 of the bytes that were loaded.
+    """
+    scored = None
+    if checkpoint is not None:
+        scored = {
+            "path": str(checkpoint.path),
+            "sha256": checkpoint.sha256,
+            "samples_consumed": checkpoint.samples_consumed,
+            "decision_threshold": checkpoint.decision_threshold,
+        }
+    return {
+        "mode": mode.value,
+        "source": str(source),
+        "config": cfg.to_dict(),
+        "checkpoint": scored,
+        "device": str(device),
+    }
+
+
 @dataclass(slots=True)
 class EvalReport:
     """Full evaluation report across all (d, p) points.
@@ -278,7 +336,7 @@ class EvalReport:
     results : list[EvalPointResult]
         Per-point results.
     metadata : dict
-        Report-level metadata (decoder names, config, etc).
+        What produced the report (:func:`report_metadata`).
     """
 
     results: list[EvalPointResult] = field(default_factory=list)
@@ -292,9 +350,8 @@ class EvalReport:
         }
 
     def save(self, path: Path) -> None:
-        """Write report as JSON."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        """Write report as JSON, atomically."""
+        write_json(path, self.to_dict())
 
 
 def load_eval_set(eval_dir: Path) -> EvalSet:

@@ -65,7 +65,8 @@ class OperationProfile:
     metric_policy : MetricPolicy
         Which metrics may appear in result artifacts.
     run_dir_segment : str
-        Operation segment under ``outputs/runs/{operation}/{distance}/{strategy}``.
+        Operation segment of a run directory,
+        ``<output_dir>/<segment>/d<distances>/<run_id>``.
     """
 
     operation: str

@@ -1,8 +1,8 @@
-# GNN Training Configuration
+# Memory training - one model across every distance in the memory root.
 
 # Compute backend: "pytorch" or "compiled" for training.
 # "cuda" is inference-only (custom kernels lack autograd backward).
-# "compiled" uses torch.compile for kernel fusion (~2x throughput, GPU-only).
+# "compiled" fuses kernels with torch.compile (GPU only).
 backend: "pytorch"
 
 # torch.compile mode (only used when backend is "compiled").
@@ -18,7 +18,7 @@ amp_dtype: "bfloat16"
 # Experiment
 operation: "memory"
 
-# Data paths
+# Root of the run directories; a run's directory is named by its config and circuits.
 output_dir: "./outputs/runs"
 
 # Model architecture

@@ -1,5 +1,5 @@
-# d=7 training - per-distance model
-# Trains only on d=7 circuits across all 4 error probabilities.
+# Memory d=7 training - per-distance model
+# Trains on the d=7 circuits of every error probability in the memory root.
 # Larger budget than d=5: d=7 graphs have ~47 fired detectors (mean at
 # p=0.01) and ~2k edges per graph, requiring more training to converge.
 
@@ -10,7 +10,7 @@ amp_dtype: "bfloat16"
 # Experiment
 operation: "memory"
 
-# Data paths
+# Root of the run directories; a run's directory is named by its config and circuits.
 output_dir: "./outputs/runs"
 
 # Distance filter
@@ -49,7 +49,7 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping
+# Early stopping disabled: training spends the whole budget.
 patience: 0
 
 # Reproducibility

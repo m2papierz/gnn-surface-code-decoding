@@ -1,7 +1,9 @@
 # Memory d=3 evaluation - per-distance checkpoint
 
 operation: "memory"
-checkpoint: "outputs/runs/memory/d3/direct/best.pt"
+# The finished run of train_memory_d3.yaml: its directory is named by
+# that config and its circuits, so this path changes whenever either does.
+checkpoint: "outputs/runs/memory/d3/103afd445035/best.pt"
 distances: [3]
 batch_size: 256
 

@@ -8,7 +8,6 @@ under ``src/`` may import it, and a test enforces this.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections import Counter, defaultdict
 from importlib.metadata import version
@@ -22,6 +21,7 @@ from tqec import compile_block_graph as _tqec_compile
 from tqec.utils.noise_model import NoiseRule
 from tqec.utils.scale import LinearFunction
 
+from artifact_file import atomic_write, file_sha256
 from sampling.circuit_metadata import PhaseWindow, build_layout
 from sampling.dem import error_instructions
 from sampling.experiment import ExperimentKey, write_circuit_manifest
@@ -650,10 +650,9 @@ def generate_and_write_circuit(
     filename = f"d{distance}_r{total_rounds}_{p_tag}.stim"
     circuit_path = output_dir / filename
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    circuit.to_file(str(circuit_path))
-
-    circuit_sha256 = hashlib.sha256(circuit_path.read_bytes()).hexdigest()
+    with atomic_write(circuit_path) as temp:
+        circuit.to_file(temp)
+    circuit_sha256 = file_sha256(circuit_path)
 
     key = ExperimentKey(
         operation=operation,

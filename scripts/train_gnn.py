@@ -2,19 +2,21 @@
 
 The config file names the experiment and every hyperparameter; CLI flags
 override single values.  Several ``distances`` train one model across them.
+The run directory is named by the resolved config and its circuits, so a run
+is never overwritten: training a spec that already has a run is refused, and
+``--resume`` continues that run from its last checkpoint.
 
 Examples
 --------
     # Train from config
-    uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
+    uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml
 
     # Override distances and budget
     uv run scripts/train_gnn.py -c configs/train.yaml \
         --distances 3 --sample-budget 2000000
 
-    # Resume from checkpoint
-    uv run scripts/train_gnn.py -c configs/train.yaml \
-        --resume outputs/runs/memory/d3/direct/best.pt
+    # Continue the killed run of the same config and overrides
+    uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml --resume
 """
 
 from __future__ import annotations
@@ -27,10 +29,15 @@ from typing import Sequence
 from training import TrainConfig, Trainer
 
 
-def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
+def parse_args(argv: Sequence[str] | None = None) -> tuple[TrainConfig, bool]:
     """Parse CLI arguments into a :class:`TrainConfig`.
 
     CLI args override values loaded from YAML config.
+
+    Returns
+    -------
+    tuple of (TrainConfig, bool)
+        The config, and whether to resume its run rather than start it.
     """
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -68,7 +75,11 @@ def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
     parser.add_argument("--val-size", type=int, default=None)
     parser.add_argument("--warmup-fraction", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue this config's unfinished run from its last checkpoint",
+    )
     parser.add_argument(
         "--distances",
         type=int,
@@ -104,7 +115,6 @@ def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
         "val_size": args.val_size,
         "warmup_fraction": args.warmup_fraction,
         "seed": args.seed,
-        "resume": args.resume,
         "backend": args.backend,
         "compile_mode": args.compile_mode,
         "distances": args.distances,
@@ -112,12 +122,17 @@ def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
     }
 
     fields.update({key: value for key, value in field_map.items() if value is not None})
-    return TrainConfig.from_fields(fields)
+    return TrainConfig.from_fields(fields), args.resume
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for GNN training."""
-    Trainer(parse_args(argv)).fit()
+    cfg, resume = parse_args(argv)
+    trainer = Trainer(cfg)
+    if resume:
+        trainer.resume()
+    else:
+        trainer.fit()
 
 
 if __name__ == "__main__":

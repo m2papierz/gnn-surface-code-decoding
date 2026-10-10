@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 import stim
 import torch
 
+from artifact_file import file_sha256
 from sampling.experiment import ExperimentKey, write_circuit_manifest
-from training import TrainConfig, Trainer
+from sampling.sampler import settings_from_circuit_dir
+from training import RunSpec, TrainConfig, Trainer, resolve_run_dir
 
 
 MEMORY_CIRCUITS = Path("data/circuits/memory")
@@ -57,6 +60,13 @@ def _make_config(circuit_dir, output_dir, **overrides):
     return TrainConfig(**defaults)
 
 
+def _spec(cfg: TrainConfig) -> RunSpec:
+    settings = settings_from_circuit_dir(
+        cfg.circuit_dir, operation=cfg.operation, distances=cfg.distances
+    )
+    return RunSpec.resolve(cfg, settings)
+
+
 class TestSampleBudgetSmoke:
     """Smoke test: budget=1000, batch=64, CPU."""
 
@@ -96,26 +106,29 @@ class TestSampleBudgetSmoke:
 
     def test_history_file_written(self, circuit_dir, tmp_path) -> None:
         cfg = _make_config(circuit_dir, tmp_path / "out")
-        trainer = Trainer(cfg)
-        trainer.fit()
+        best_path = Trainer(cfg).fit()
 
-        history_path = tmp_path / "out" / "memory" / "mixed" / "direct" / "history.json"
-        assert history_path.exists()
-        history = json.loads(history_path.read_text())
-        assert len(history) >= 2
-        assert "samples_consumed" in history[0]
+        history = json.loads((best_path.parent / "history.json").read_text())
+        assert history["segment_starts"] == [0]
+        assert len(history["validations"]) >= 2
+        assert "samples_consumed" in history["validations"][0]
 
     def test_config_json_written(self, circuit_dir, tmp_path) -> None:
         cfg = _make_config(circuit_dir, tmp_path / "out")
-        trainer = Trainer(cfg)
-        trainer.fit()
+        best_path = Trainer(cfg).fit()
 
-        config_path = tmp_path / "out" / "memory" / "mixed" / "direct" / "config.json"
-        assert config_path.exists()
-        saved = json.loads(config_path.read_text())
-        assert saved["sample_budget"] == 1000
-        assert saved["node_dim"] == 6
-        assert saved["edge_dim"] == 6
+        saved = json.loads((best_path.parent / "config.json").read_text())
+        assert saved["run_id"] == best_path.parent.name
+        assert saved["config"]["sample_budget"] == 1000
+        assert saved["contract"]["node_dim"] == 6
+        assert saved["contract"]["edge_dim"] == 6
+        assert saved["distances"] == [3]
+        assert saved["circuits"] == [
+            {
+                "path": str(circuit_dir / "d3_r3_p0_01.stim"),
+                "sha256": file_sha256(circuit_dir / "d3_r3_p0_01.stim"),
+            }
+        ]
 
 
 class TestCircuitsBelongToTheOperation:
@@ -301,23 +314,52 @@ class TestOperationConfig:
 
 
 class TestRunDir:
-    """Run directory computed from (profile, strategy)."""
+    """A run lives at <output_dir>/<operation>/d<distances>/<run_id>."""
 
-    def test_resolve_run_dir_layout(self) -> None:
-        from pathlib import Path
+    def test_layout(self, circuit_dir, tmp_path) -> None:
+        run_dir = resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path / "out")))
+        assert run_dir.parent == tmp_path / "out" / "memory" / "d3"
+        assert re.fullmatch(r"[0-9a-f]{12}", run_dir.name)
 
-        from training.primitives import resolve_run_dir
+    def test_the_distances_of_the_circuits_name_one_segment(self, tmp_path) -> None:
+        cfg = TrainConfig(
+            operation="memory", circuit_dir=MEMORY_CIRCUITS, output_dir=tmp_path
+        )
+        assert resolve_run_dir(_spec(cfg)).parent.name == "d3_5_7"
 
-        d = resolve_run_dir(Path("outputs/runs"), "memory", [3], "direct")
-        assert d == Path("outputs/runs/memory/d3/direct")
+    def test_the_same_spec_names_the_same_directory(
+        self, circuit_dir, tmp_path
+    ) -> None:
+        first = resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path)))
+        assert resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path))) == first
 
-    def test_resolve_run_dir_unknown_operation_raises(self) -> None:
-        from pathlib import Path
+    @pytest.mark.parametrize(
+        "override",
+        [{"seed": 43}, {"sample_budget": 2000}, {"num_workers": 1}, {"lr": 2e-3}],
+        ids=lambda override: next(iter(override)),
+    )
+    def test_any_setting_names_another_directory(
+        self, override, circuit_dir, tmp_path
+    ) -> None:
+        base = resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path)))
+        changed = _make_config(circuit_dir, tmp_path, **override)
+        assert resolve_run_dir(_spec(changed)) != base
 
-        from training.primitives import resolve_run_dir
+    def test_changed_circuit_bytes_name_another_directory(
+        self, circuit_dir, tmp_path
+    ) -> None:
+        cfg = _make_config(circuit_dir, tmp_path / "out")
+        before = resolve_run_dir(_spec(cfg))
+        circuit = circuit_dir / "d3_r3_p0_01.stim"
+        circuit.write_text(circuit.read_text() + "\n")
+        assert resolve_run_dir(_spec(cfg)) != before
 
-        with pytest.raises(ValueError, match="Unknown operation"):
-            resolve_run_dir(Path("out"), "nonexistent_op", [3], "direct")
+    def test_moving_the_outputs_root_renames_no_run(
+        self, circuit_dir, tmp_path
+    ) -> None:
+        here = resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path / "a")))
+        there = resolve_run_dir(_spec(_make_config(circuit_dir, tmp_path / "b")))
+        assert here.relative_to(tmp_path / "a") == there.relative_to(tmp_path / "b")
 
 
 class TestFromYaml:

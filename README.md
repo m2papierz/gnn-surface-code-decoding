@@ -45,12 +45,15 @@ Train a GNN decoder using sample-budget training with on-the-fly Stim sampling:
 uv run scripts/train_gnn.py -c configs/train.yaml
 
 # Per-distance configs with tuned budgets
-uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
-uv run scripts/train_gnn.py -c configs/train_memory_d5_direct.yaml
-uv run scripts/train_gnn.py -c configs/train_memory_d7_direct.yaml
+uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml
+uv run scripts/train_gnn.py -c configs/train_memory_d5.yaml
+uv run scripts/train_gnn.py -c configs/train_memory_d7.yaml
+
+# Continue a killed run of the same config
+uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml --resume
 ```
 
-One trainer serves every operation; a config listing several `distances` trains one model across them.
+One trainer serves every operation; a config listing several `distances` trains one model across them.  A run lives in `outputs/runs/<operation>/d<distances>/<run_id>/`, where `run_id` is named by the resolved config and the circuits it trains on, so a run is never overwritten.
 
 See [`docs/model.md`](docs/model.md) for architecture details (GINE encoder, LogicalHead, pooling), hyperparameters, and training configuration.
 
@@ -60,14 +63,16 @@ Evaluate the GNN against classical baselines on frozen eval sets with adaptive s
 
 ```bash
 # Full eval harness: GNN vs baselines on frozen sets
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml -o outputs/results/eval_memory_d3.json
 
 # Quick sanity check on fresh samples
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --sanity
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --sanity -o outputs/results/sanity_memory_d3.json
 
 # Dry run (validate config without decoding)
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --dry-run
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --dry-run
 ```
+
+Each eval config scores the run of its train config.  Every report records the resolved config and the checkpoint it scored, by path and by the sha256 of the bytes that were loaded.
 
 Record the scaling and baseline diagnostics of every frozen evaluation point - graph size, the flip rate of each logical observable, the detector error model's probability mass by mechanism class, MWPM against correlated matching, and which physical error rates are sub-threshold for each decoder:
 
@@ -93,7 +98,8 @@ selection rules, and the bucketed CUDA-Graphs fast path (inference only).
 Generate evaluation figures:
 
 ```bash
-uv run scripts/plot_results.py -v            # LER vs p, and LER vs distance
+# LER vs p, and LER vs distance, from one harness report per distance
+uv run scripts/plot_results.py --reports outputs/results/eval_memory_d{3,5,7}.json
 uv run scripts/plot_calibration.py           # reliability diagrams and ECE
 ```
 

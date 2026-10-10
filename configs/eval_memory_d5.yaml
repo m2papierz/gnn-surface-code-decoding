@@ -1,7 +1,9 @@
 # Memory d=5 evaluation - per-distance checkpoint
 
 operation: "memory"
-checkpoint: "outputs/runs/memory/d5/direct/best.pt"
+# The finished run of train_memory_d5.yaml: its directory is named by
+# that config and its circuits, so this path changes whenever either does.
+checkpoint: "outputs/runs/memory/d5/112ff51e72f1/best.pt"
 distances: [5]
 batch_size: 256
 

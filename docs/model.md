@@ -93,13 +93,13 @@ input or output width is not its contract's.
 uv run scripts/train_gnn.py -c configs/train.yaml
 
 # Per-distance configs with tuned budgets
-uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
+uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml
 
 # Use torch.compile backend
 uv run scripts/train_gnn.py -c configs/train.yaml --backend compiled
 
-# Resume from checkpoint
-uv run scripts/train_gnn.py -c configs/train.yaml --resume outputs/runs/memory/d3/direct/best.pt
+# Continue the killed run of the same config and overrides
+uv run scripts/train_gnn.py -c configs/train_memory_d3.yaml --resume
 ```
 
 One trainer, `Trainer`, serves every operation.  A config listing several `distances` trains one model across them, each shot drawn uniformly from the selected circuits.
@@ -145,17 +145,22 @@ Programmatic access: `TrainConfig.from_yaml("configs/train.yaml")`.
 - **Scheduler**: Linear warmup (`warmup_fraction` of budget, from 1% of peak lr) followed by cosine annealing to lr/50
 - **Mixed precision**: AMP with configurable `amp_dtype` (`bfloat16` or `float16`)
 - **Data loading**: persistent workers + prefetch for reduced overhead
-- **Checkpointing**: saves `best.pt` when validation LER improves (lower is better)
-- **Reproducibility**: `seed` sets Python, NumPy, and PyTorch RNGs
+- **Checkpointing**: every validation atomically replaces `last.pt` (training state, progress, and the state at the best validation LER so far); `best.pt` is written once, when training ends
+- **Reproducibility**: `seed` is the master seed; the training stream and PyTorch's generator are seeded per segment from it, the frozen validation set from its own derived seed
 
 ### Outputs
 
 ```
-outputs/runs/<operation>/<distance_segment>/<strategy>/
-├── best.pt        # best model checkpoint
-├── config.json    # full hyperparameter record
-└── history.json   # per-checkpoint train/val metrics
+outputs/runs/<operation>/d<distances>/<run_id>/
+├── config.json    # the resolved spec: config, contract, distances, circuits with sha256
+├── last.pt        # resume state, replaced at every validation
+├── history.json   # segment starts and per-validation train/val metrics, at the end
+└── best.pt        # the best validation state with its calibrated threshold, at the end
 ```
+
+`<distances>` joins the distances of the circuits trained on (`d3`, `d3_5_7`); `<run_id>` is the first 12 hex digits of the sha256 of `config.json`'s spec.  Any change to a setting, a circuit or the representation names another directory; moving `output_dir` renames none.  A directory is created whole, holding `config.json` and `last.pt`, so it either does not exist or can be resumed.  Training a spec whose directory already holds a run is refused: a run is never overwritten, and a finished run (one with `best.pt`) is never resumed.
+
+`--resume` reopens the run of the same config and overrides from its `last.pt`.  Stim's samplers cannot save their state, so each segment draws a fresh training stream seeded from the master seed and the samples consumed at its start: no shot is reused, and a resumed run is determined by where it was killed (bitwise on CPU; CUDA scatter kernels accumulate with atomics, so no GPU run is bitwise reproducible).  `history.json` lists every segment start.
 
 ### Hyperparameter defaults
 
@@ -185,14 +190,16 @@ These are the code defaults in `TrainConfig`.  The shipped `configs/train.yaml` 
 
 ```bash
 # Config-driven evaluation
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml -o outputs/results/eval_memory_d3.json
 
 # Quick sanity check
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --sanity
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --sanity -o outputs/results/sanity_memory_d3.json
 
 # Dry run (validate config only)
-uv run scripts/eval_gnn.py -c configs/eval_memory_d3_direct.yaml --dry-run
+uv run scripts/eval_gnn.py -c configs/eval_memory_d3.yaml --dry-run
 ```
+
+Each committed eval config names the `best.pt` of its train config's run; a test recomputes that run's directory and fails when the two drift apart.  Every report is `{metadata, points}`, its metadata holding the mode, where the scored shots came from, the resolved config, the checkpoint by path, sha256 of the loaded bytes, samples consumed and threshold, and the device.  Reports are written only to `-o`, never into a run directory.
 
 ### Evaluation protocol
 

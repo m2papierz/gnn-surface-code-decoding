@@ -1,6 +1,6 @@
-# ZZ merge-split d=7 training - per-distance model
-# Trains only on d=7 circuits across all 4 error probabilities.
-# Budget: 100M samples (2× the memory d=7 budget).
+# ZZ merge-split d=5 training - per-distance model
+# Trains on the d=5 circuits of every error probability in the merge-split root.
+# Budget: 30M samples (2× the memory d=5 budget).
 
 backend: "compiled"
 compile_mode: "default"
@@ -9,11 +9,11 @@ amp_dtype: "bfloat16"
 # Experiment
 operation: "zz_merge_split"
 
-# Data paths
+# Root of the run directories; a run's directory is named by its config and circuits.
 output_dir: "./outputs/runs"
 
 # Distance filter
-distances: [7]
+distances: [5]
 
 # Model architecture
 model:
@@ -28,10 +28,10 @@ optimisation:
   batch_size: 128
 
 # Sample budget
-sample_budget: 100_000_000
+sample_budget: 30_000_000
 
-# Validate every 500k samples (wider interval for longer run).
-val_interval_samples: 500_000
+# Validate every 200k samples.
+val_interval_samples: 200_000
 
 # Frozen validation set size.
 val_size: 10_000
@@ -48,7 +48,7 @@ num_workers: 4
 # Gradient clipping
 max_grad_norm: 1.0
 
-# Early stopping
+# Early stopping disabled: training spends the whole budget.
 patience: 0
 
 # Reproducibility

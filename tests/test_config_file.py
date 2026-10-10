@@ -10,7 +10,10 @@ import pytest
 
 from config_file import read_config_fields
 from evaluation.config import EvalConfig
+from sampling.sampler import settings_from_circuit_dir
+from training import RunSpec, resolve_run_dir
 from training.config import TrainConfig
+from training.run import BEST_CHECKPOINT
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -102,6 +105,27 @@ class TestConfigClasses:
         path = _write(tmp_path, 'operation: "memory"\nmodel:\n  hiden_dim: 32\n')
         with pytest.raises(ValueError, match="'model.hiden_dim'"):
             TrainConfig.from_yaml(path)
+
+
+class TestEvalConfigsScoreTheirTrainRun:
+    @pytest.mark.parametrize(
+        "eval_path",
+        sorted(CONFIGS_DIR.glob("eval_*.yaml")),
+        ids=lambda path: path.name,
+    )
+    def test_the_checkpoint_is_the_best_of_the_train_config_run(
+        self, eval_path: Path
+    ) -> None:
+        """A train config or circuit change must move the eval config with it."""
+        train_path = eval_path.with_name(
+            "train_" + eval_path.name.removeprefix("eval_")
+        )
+        cfg = TrainConfig.from_yaml(train_path)
+        settings = settings_from_circuit_dir(
+            cfg.circuit_dir, operation=cfg.operation, distances=cfg.distances
+        )
+        run_dir = resolve_run_dir(RunSpec.resolve(cfg, settings))
+        assert EvalConfig.from_yaml(eval_path).checkpoint == run_dir / BEST_CHECKPOINT
 
 
 class TestScripts:

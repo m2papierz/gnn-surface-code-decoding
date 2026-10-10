@@ -46,7 +46,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -57,6 +56,7 @@ import stim
 import torch
 from torch_geometric.data import Batch, Data
 
+from artifact_file import write_json
 from model.decoder import QECDecoder, build_model, collate_graphs
 from model.ops import set_backend
 from sampling.graph import CircuitMetadata
@@ -490,7 +490,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
 
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
         payload: dict = {
             "operation": args.operation,
             "representation": representation,
@@ -507,10 +506,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         }
         if caveats:
             payload["caveats"] = caveats
-        args.output.write_text(
-            json.dumps(payload, indent=2),
-            encoding="utf-8",
-        )
+        write_json(args.output, payload)
         logger.info("\nWrote %s", args.output)
 
 

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import platform
 import shlex
@@ -38,6 +37,7 @@ from typing import Any
 import numpy as np
 import stim
 
+from artifact_file import write_json
 from decoders import CorrelatedMatchingDecoder, PyMatchingDecoder
 from evaluation.evaluator import EvalSet, discover_eval_sets, load_eval_set
 from evaluation.scaling_diagnostics import (
@@ -210,16 +210,6 @@ def _provenance(argv: Sequence[str]) -> dict[str, Any]:
     }
 
 
-def _write_json(payload: dict[str, Any], path: Path) -> None:
-    """Write ``payload`` to ``path``, replacing any previous file in one step."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".partial")
-    partial.write_text(
-        json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-    )
-    partial.replace(path)
-
-
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     operations = sorted(registered_operations())
     parser = argparse.ArgumentParser(
@@ -276,7 +266,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     ]
     report = report_to_dict(points, provenance=_provenance(argv))
-    _write_json(report, args.output)
+    write_json(args.output, report)
 
     for operation, decoders in report["threshold_summary"].items():
         for decoder, verdicts in decoders.items():

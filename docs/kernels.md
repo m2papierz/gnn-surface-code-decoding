@@ -58,7 +58,7 @@ Or via environment variable:
 
 ```bash
 QECDEC_BACKEND=cuda uv run scripts/eval_gnn.py \
-    -c configs/eval_memory_d3_direct.yaml
+    -c configs/eval_memory_d3.yaml
 ```
 
 Or in benchmarking:

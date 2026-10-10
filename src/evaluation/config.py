@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from config_file import read_config_fields
+from config_file import config_fields, read_config_fields
 from sampling.profile import require_operation, resolve_profile
 
 
@@ -79,6 +79,10 @@ class EvalConfig:
 
     def __post_init__(self) -> None:
         resolve_profile(self.operation)  # rejects an unregistered operation
+
+    def to_dict(self) -> dict[str, Any]:
+        """The field values as JSON values, paths as text."""
+        return config_fields(self)
 
     @staticmethod
     def read_yaml_fields(path: str | Path) -> dict[str, Any]:

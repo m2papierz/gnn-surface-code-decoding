@@ -1,17 +1,15 @@
-"""Training configuration and seeding utilities."""
+"""Training configuration."""
 
 from __future__ import annotations
 
-import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-import numpy as np
 import torch
 
-from config_file import read_config_fields
+from config_file import config_fields, read_config_fields
 from sampling.profile import require_operation, resolve_profile
 
 
@@ -30,7 +28,7 @@ _AMP_DTYPES: Final[dict[str, torch.dtype]] = {
 
 
 # Fields holding a path; YAML and the CLI deliver them as strings.
-_TRAIN_PATH_FIELDS: Final[tuple[str, ...]] = ("circuit_dir", "output_dir", "resume")
+_TRAIN_PATH_FIELDS: Final[tuple[str, ...]] = ("circuit_dir", "output_dir")
 
 # YAML keys read into TrainConfig fields: top-level, then per nested section.
 _TOP_LEVEL_KEYS: Final[tuple[str, ...]] = (
@@ -74,7 +72,8 @@ class TrainConfig:
         :meth:`from_fields` fills it from the operation's profile when the
         fields leave it out.
     output_dir : Path
-        Directory for checkpoints and logs.
+        Root of the run directories; a run's directory under it is named by
+        the run's resolved spec (``training.run.resolve_run_dir``).
     hidden_dim : int
         Encoder hidden dimensionality.
     num_layers : int
@@ -103,8 +102,6 @@ class TrainConfig:
         once at training start with a deterministic seed.
     seed : int
         Master random seed.
-    resume : Path or None
-        Path to checkpoint to resume from.
     backend : str
         Compute backend: ``"pytorch"`` (default) or ``"compiled"``
         (recommended on GPU).  Rejected in ``__post_init__`` if it is
@@ -147,7 +144,6 @@ class TrainConfig:
     val_interval_samples: int = 50_000
     val_size: int = 10_000
     seed: int = 42
-    resume: Path | None = None
     backend: str = "pytorch"
     compile_mode: str = "default"
     amp_dtype: str = "bfloat16"
@@ -249,6 +245,10 @@ class TrainConfig:
                 f"got {self.amp_dtype!r}"
             )
 
+    def to_dict(self) -> dict[str, Any]:
+        """The field values as JSON values, paths as text."""
+        return config_fields(self)
+
     @property
     def amp_torch_dtype(self) -> torch.dtype:
         """The autocast dtype named by :attr:`amp_dtype`.
@@ -256,12 +256,3 @@ class TrainConfig:
         Validated in ``__post_init__``, so this cannot raise.
         """
         return _AMP_DTYPES[self.amp_dtype]
-
-
-def seed_everything(seed: int) -> None:
-    """Set random seeds for Python, NumPy, and PyTorch."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)

@@ -1,17 +1,19 @@
 """Training primitives composed by the trainer.
 
 Provides the building blocks of the training loop: state management,
-gradient steps, validation, threshold calibration, checkpoint I/O, and
-DataLoader construction.  ``Trainer`` is a thin orchestrator that composes
-these functions, each testable without running a fit.
+gradient steps, validation, threshold calibration, checkpoint I/O (state
+snapshots, payloads, atomic writes), and DataLoader construction.  ``Trainer``
+is a thin orchestrator that composes these functions, each testable without
+running a fit.
 """
 
 from __future__ import annotations
 
+import copy
 import itertools
 import logging
-from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from torch.optim.lr_scheduler import (
 )
 from torch_geometric.loader import DataLoader
 
+from artifact_file import atomic_write
 from model.dataset import StreamingSurfaceCodeDataset
 from model.decoder import QECDecoder, build_model
 from sampling.profile import resolve_profile
@@ -73,39 +76,6 @@ class TrainingState:
     amp_dtype: torch.dtype
     device: torch.device
     max_grad_norm: float
-
-
-def resolve_run_dir(
-    output_dir: Path,
-    operation: str,
-    distances: list[int] | tuple[int, ...] | None,
-    strategy: str,
-) -> Path:
-    """Compute the run directory from operation, distances, and strategy.
-
-    Parameters
-    ----------
-    output_dir : Path
-        Base output directory (e.g. ``outputs/runs``).
-    operation : str
-        Operation name, resolved to a profile for the run-directory segment.
-    distances : list or tuple of int, or None
-        Active code distances.  A single distance produces ``d{n}``; multiple
-        or ``None`` (all) produces ``mixed``.
-    strategy : str
-        Training strategy label (``"direct"``).
-
-    Returns
-    -------
-    Path
-        ``output_dir / <operation> / <distance_segment> / <strategy>``.
-    """
-    profile = resolve_profile(operation)
-    if distances is not None and len(distances) == 1:
-        distance_segment = f"d{distances[0]}"
-    else:
-        distance_segment = "mixed"
-    return output_dir / profile.run_dir_segment / distance_segment / strategy
 
 
 def build_training_state(
@@ -355,6 +325,73 @@ def sweep_threshold(
     return best_threshold
 
 
+def snapshot_state(state: TrainingState) -> dict[str, Any]:
+    """Copy the model, optimizer, scheduler and scaler state dicts of *state*.
+
+    The copy is independent of the live objects, so training continues while
+    it holds an earlier step's state; its keys are a checkpoint's.
+    """
+    return copy.deepcopy(_state_dicts(state))
+
+
+def restore_state(state: TrainingState, saved: Mapping[str, Any]) -> None:
+    """Load the four state dicts of *saved*, a checkpoint or snapshot, into *state*."""
+    state.model.load_state_dict(saved["model_state_dict"])
+    state.optimizer.load_state_dict(saved["optimizer_state_dict"])
+    state.scheduler.load_state_dict(saved["scheduler_state_dict"])
+    state.scaler.load_state_dict(saved["scaler_state_dict"])
+
+
+def checkpoint_payload(
+    state: TrainingState,
+    *,
+    samples_consumed: int,
+    best_metric: float,
+    decision_threshold: float,
+    contract: DataContract,
+    cfg: TrainConfig,
+) -> dict[str, Any]:
+    """Assemble what a checkpoint file stores, referencing the live state.
+
+    Parameters
+    ----------
+    state : TrainingState
+        Training state whose state dicts are stored.
+    samples_consumed : int
+        Cumulative training samples consumed.
+    best_metric : float
+        Best validation metric achieved.
+    decision_threshold : float
+        Decision threshold for inference.
+    contract : DataContract
+        Representation and label contract the model was trained under.
+    cfg : TrainConfig
+        Training config.
+
+    Returns
+    -------
+    dict
+        The checkpoint, ready for :func:`write_payload`.
+    """
+    config = cfg.to_dict()
+    config["contract"] = contract.to_dict()
+    config["node_dim"] = contract.node_dim
+    config["edge_dim"] = contract.edge_dim
+    return {
+        "samples_consumed": samples_consumed,
+        "best_metric": best_metric,
+        "decision_threshold": decision_threshold,
+        "config": config,
+        **_state_dicts(state),
+    }
+
+
+def write_payload(path: Path, payload: dict[str, Any]) -> None:
+    """Save a checkpoint payload to *path*, atomically."""
+    with atomic_write(path) as temp:
+        torch.save(payload, temp)
+
+
 def write_checkpoint(
     path: Path,
     state: TrainingState,
@@ -365,41 +402,24 @@ def write_checkpoint(
     contract: DataContract,
     cfg: TrainConfig,
 ) -> None:
-    """Save a training checkpoint.
+    """Save a training checkpoint, atomically.
 
     Parameters
     ----------
     path : Path
         Checkpoint file path.
-    state : TrainingState
-        Current training state.
-    samples_consumed : int
-        Cumulative training samples consumed.
-    best_metric : float
-        Best validation metric achieved.
-    decision_threshold : float
-        Decision threshold for inference.
-    contract : DataContract
-        Representation and label contract (persisted in checkpoint).
-    cfg : TrainConfig
-        Training config (persisted in checkpoint).
+    state, samples_consumed, best_metric, decision_threshold, contract, cfg
+        As in :func:`checkpoint_payload`.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    config_dict = asdict(cfg)
-    config_dict["contract"] = contract.to_dict()
-    config_dict["node_dim"] = contract.node_dim
-    config_dict["edge_dim"] = contract.edge_dim
-
-    ckpt: dict[str, Any] = {
-        "samples_consumed": samples_consumed,
-        "model_state_dict": state.model.state_dict(),
-        "optimizer_state_dict": state.optimizer.state_dict(),
-        "scheduler_state_dict": state.scheduler.state_dict(),
-        "best_metric": best_metric,
-        "decision_threshold": decision_threshold,
-        "config": config_dict,
-    }
-    torch.save(ckpt, path)
+    payload = checkpoint_payload(
+        state,
+        samples_consumed=samples_consumed,
+        best_metric=best_metric,
+        decision_threshold=decision_threshold,
+        contract=contract,
+        cfg=cfg,
+    )
+    write_payload(path, payload)
 
 
 def load_checkpoint(
@@ -409,7 +429,7 @@ def load_checkpoint(
     *,
     contract: DataContract,
 ) -> dict[str, Any]:
-    """Load a checkpoint and restore model, optimizer and scheduler state.
+    """Load a checkpoint and restore model, optimizer, scheduler and scaler state.
 
     Parameters
     ----------
@@ -434,7 +454,7 @@ def load_checkpoint(
     ValueError
         If the checkpoint's architecture or contract differs from the run's.
     """
-    ckpt = torch.load(path, weights_only=False)
+    ckpt = torch.load(path, weights_only=False, map_location=state.device)
     try:
         ckpt_cfg = ckpt["config"]
         saved_architecture = {
@@ -453,16 +473,29 @@ def load_checkpoint(
             )
     require_contract(contract, saved_contract, source=path)
 
-    state.model.load_state_dict(ckpt["model_state_dict"])
-    state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    try:
+        restore_state(state, ckpt)
+    except KeyError as exc:
+        raise KeyError(f"Checkpoint {path} has no {exc.args[0]!r}") from exc
     return ckpt
+
+
+def _state_dicts(state: TrainingState) -> dict[str, Any]:
+    """The live state dicts of *state*, keyed as a checkpoint stores them."""
+    return {
+        "model_state_dict": state.model.state_dict(),
+        "optimizer_state_dict": state.optimizer.state_dict(),
+        "scheduler_state_dict": state.scheduler.state_dict(),
+        "scaler_state_dict": state.scaler.state_dict(),
+    }
 
 
 def make_streaming_loader(
     settings: Sequence[CircuitSetting],
     cfg: TrainConfig,
     device: torch.device,
+    *,
+    master_seed: int,
 ) -> DataLoader:
     """Create a streaming training DataLoader.
 
@@ -471,9 +504,11 @@ def make_streaming_loader(
     settings : sequence of CircuitSetting
         Circuit settings to sample from.
     cfg : TrainConfig
-        Training config (seed, batch_size, num_workers, etc.).
+        Training config (batch_size, num_workers, etc.).
     device : torch.device
         Target device (controls pin_memory).
+    master_seed : int
+        Seed of the training stream; every worker's stream derives from it.
 
     Returns
     -------
@@ -482,7 +517,7 @@ def make_streaming_loader(
     profile = resolve_profile(cfg.operation)
     ds = StreamingSurfaceCodeDataset(
         settings=settings,
-        master_seed=cfg.seed,
+        master_seed=master_seed,
         include_p_feature=cfg.include_p_feature,
         contract=profile.data_contract,
         metadata_extractor=profile.metadata_extractor,

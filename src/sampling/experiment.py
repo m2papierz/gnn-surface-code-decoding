@@ -14,15 +14,14 @@ comparing an operation name to a literal.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
+
+from artifact_file import file_sha256, write_json
 
 
 __all__ = [
@@ -304,12 +303,11 @@ def eval_set_key(manifest: Mapping[str, Any], source: Path) -> ExperimentKey:
 def _verify_circuit_sha256(circuit_path: Path, recorded: str, source: Path) -> None:
     """Require the circuit's bytes to hash to the digest the set recorded."""
     try:
-        circuit_bytes = circuit_path.read_bytes()
+        actual = file_sha256(circuit_path)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Manifest {source} names circuit {circuit_path}, which does not exist"
         ) from exc
-    actual = hashlib.sha256(circuit_bytes).hexdigest()
     if actual != recorded:
         raise ValueError(
             f"Circuit {circuit_path} hashes to {actual}, but the set of {source} "
@@ -360,21 +358,9 @@ def write_circuit_manifest(
     }
     manifest_path = circuit_manifest_path(circuit_path)
 
-    # Written through a temporary file in the same directory and renamed, so an
-    # interrupted generator leaves either the previous manifest or the new one.
-    # A half-written manifest would be worse than none: a truncated JSON object
-    # can still parse, and would then declare an identity nobody chose.
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=manifest_path.parent,
-        prefix=f".{manifest_path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        handle.write(json.dumps(manifest, indent=2) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        temp_path = Path(handle.name)
-    os.replace(temp_path, manifest_path)
+    # Atomic, so an interrupted generator leaves the previous manifest or the
+    # new one. A half-written manifest would be worse than none: a truncated
+    # JSON object can still parse, and would then declare an identity nobody
+    # chose.
+    write_json(manifest_path, manifest)
     return manifest_path

@@ -293,7 +293,7 @@ class TestEvalPath:
             ]
         )
 
-        results = json.loads(output.read_text(encoding="utf-8"))
+        results = json.loads(output.read_text(encoding="utf-8"))["points"]
         assert results
         assert all(r["n_shots"] == 64 and r["distance"] == distance for r in results)
 

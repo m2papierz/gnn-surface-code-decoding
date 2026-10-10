@@ -6,6 +6,8 @@ Thin adapters that give GNN models, PyMatching, and Belief-Matching a uniform
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -338,6 +340,8 @@ class GNNCheckpoint:
     ----------
     path : Path
         Checkpoint file the model was restored from.
+    sha256 : str
+        Hex sha256 of the bytes the model was restored from.
     model : QECDecoder
         Restored model, in eval mode on the requested device.
     contract : DataContract
@@ -349,6 +353,7 @@ class GNNCheckpoint:
     """
 
     path: Path
+    sha256: str
     model: QECDecoder
     contract: DataContract
     decision_threshold: float
@@ -381,7 +386,10 @@ def load_gnn_checkpoint(
     ValueError
         If the checkpoint was trained under a different contract.
     """
-    checkpoint = torch.load(path, weights_only=False, map_location=device)
+    # One read serves both the hash and the load, so the digest a result
+    # records is that of the model it scored, whatever the path holds later.
+    data = path.read_bytes()
+    checkpoint = torch.load(io.BytesIO(data), weights_only=False, map_location=device)
     try:
         config = checkpoint["config"]
         saved_contract = DataContract.from_checkpoint_config(config)
@@ -406,6 +414,7 @@ def load_gnn_checkpoint(
     model.eval()
     return GNNCheckpoint(
         path=path,
+        sha256=hashlib.sha256(data).hexdigest(),
         model=model,
         contract=contract,
         decision_threshold=decision_threshold,
