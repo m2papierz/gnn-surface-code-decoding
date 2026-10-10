@@ -1,9 +1,9 @@
-"""Shared training primitives composed by all trainers.
+"""Training primitives composed by the trainer.
 
-Provides the building blocks that every training loop needs:
-state management, gradient steps, validation, threshold calibration,
-checkpoint I/O, and DataLoader construction.  Trainers are thin
-orchestrators that compose these functions.
+Provides the building blocks of the training loop: state management,
+gradient steps, validation, threshold calibration, checkpoint I/O, and
+DataLoader construction.  ``Trainer`` is a thin orchestrator that composes
+these functions, each testable without running a fit.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def resolve_run_dir(
         Active code distances.  A single distance produces ``d{n}``; multiple
         or ``None`` (all) produces ``mixed``.
     strategy : str
-        Training strategy label (e.g. ``"direct"``, ``"curriculum"``).
+        Training strategy label (``"direct"``).
 
     Returns
     -------
@@ -364,7 +364,6 @@ def write_checkpoint(
     decision_threshold: float,
     contract: DataContract,
     cfg: TrainConfig,
-    extra: dict[str, Any] | None = None,
 ) -> None:
     """Save a training checkpoint.
 
@@ -384,9 +383,6 @@ def write_checkpoint(
         Representation and label contract (persisted in checkpoint).
     cfg : TrainConfig
         Training config (persisted in checkpoint).
-    extra : dict, optional
-        Additional keys to merge into the checkpoint (e.g.
-        ``curriculum_stage``, ``distance_weights``).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     config_dict = asdict(cfg)
@@ -403,8 +399,6 @@ def write_checkpoint(
         "decision_threshold": decision_threshold,
         "config": config_dict,
     }
-    if extra:
-        ckpt.update(extra)
     torch.save(ckpt, path)
 
 
@@ -414,9 +408,8 @@ def load_checkpoint(
     cfg: TrainConfig,
     *,
     contract: DataContract,
-    restore_optimizer: bool = True,
 ) -> dict[str, Any]:
-    """Load a checkpoint and restore training state.
+    """Load a checkpoint and restore model, optimizer and scheduler state.
 
     Parameters
     ----------
@@ -428,9 +421,6 @@ def load_checkpoint(
         Current config (checked for architecture compatibility).
     contract : DataContract
         Contract the run trains under; the checkpoint's must equal it.
-    restore_optimizer : bool
-        If ``True`` (default), restore optimizer and scheduler state.
-        Set to ``False`` for warm-start (model weights only).
 
     Returns
     -------
@@ -464,11 +454,8 @@ def load_checkpoint(
     require_contract(contract, saved_contract, source=path)
 
     state.model.load_state_dict(ckpt["model_state_dict"])
-
-    if restore_optimizer:
-        state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-
+    state.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    state.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
     return ckpt
 
 
@@ -476,8 +463,6 @@ def make_streaming_loader(
     settings: Sequence[CircuitSetting],
     cfg: TrainConfig,
     device: torch.device,
-    *,
-    distance_weights: dict[int, float] | None = None,
 ) -> DataLoader:
     """Create a streaming training DataLoader.
 
@@ -489,8 +474,6 @@ def make_streaming_loader(
         Training config (seed, batch_size, num_workers, etc.).
     device : torch.device
         Target device (controls pin_memory).
-    distance_weights : dict, optional
-        Per-distance sampling weights for curriculum training.
 
     Returns
     -------
@@ -501,7 +484,6 @@ def make_streaming_loader(
         settings=settings,
         master_seed=cfg.seed,
         include_p_feature=cfg.include_p_feature,
-        distance_weights=distance_weights,
         contract=profile.data_contract,
         metadata_extractor=profile.metadata_extractor,
     )
@@ -523,7 +505,6 @@ def make_streaming_loader(
 def make_frozen_val_samples(
     settings: Sequence[CircuitSetting],
     cfg: TrainConfig,
-    val_size: int,
     *,
     master_seed: int,
 ) -> list[Any]:
@@ -534,9 +515,7 @@ def make_frozen_val_samples(
     settings : sequence of CircuitSetting
         Circuit settings to sample from.
     cfg : TrainConfig
-        Training config (operation, include_p_feature, etc.).
-    val_size : int
-        Number of samples to freeze.
+        Training config (operation, include_p_feature, val_size).
     master_seed : int
         Deterministic seed for the validation stream.
 
@@ -553,7 +532,7 @@ def make_frozen_val_samples(
         contract=profile.data_contract,
         metadata_extractor=profile.metadata_extractor,
     )
-    return list(itertools.islice(ds, val_size))
+    return list(itertools.islice(ds, cfg.val_size))
 
 
 def format_metrics(metrics: dict[str, float]) -> str:

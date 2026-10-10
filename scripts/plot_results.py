@@ -37,26 +37,22 @@ _EVAL_FILES: dict[int, str] = {
     5: "runs/memory/d5/direct/eval.json",
     7: "runs/memory/d7/direct/eval.json",
 }
-_MIXED_EVAL_FILE: str = "runs/memory/mixed/curriculum/eval.json"
 
 _DECODER_KEYS: list[str] = ["gnn", "mwpm", "belief_matching"]
 _DECODER_LABELS: dict[str, str] = {
     "gnn": "GNN (per-d)",
     "mwpm": "MWPM",
     "belief_matching": "Belief-Matching",
-    "gnn_mixed": "GNN (mixed)",
 }
 _DECODER_COLORS: dict[str, str] = {
     "gnn": "#2a78d6",
     "mwpm": "#eb6834",
     "belief_matching": "#1baf7a",
-    "gnn_mixed": "#9467bd",
 }
 _DECODER_MARKERS: dict[str, str] = {
     "gnn": "o",
     "mwpm": "s",
     "belief_matching": "D",
-    "gnn_mixed": "^",
 }
 
 _MCNEMAR_ALPHA: float = 0.05
@@ -114,7 +110,7 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
     Parameters
     ----------
     eval_dir : Path
-        Root directory containing ``runs/d{3,5,7}/memory/direct/eval.json``
+        Root directory containing ``runs/memory/d{3,5,7}/direct/eval.json``
         per-distance evaluation results.
     output_dir : Path
         Directory for the output figure files.
@@ -132,12 +128,6 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
         figsize=(13, 4.5),
         sharey=False,
     )
-
-    mixed_path = eval_dir / _MIXED_EVAL_FILE
-    mixed_points_by_d: dict[int, list[dict[str, Any]]] = {}
-    if mixed_path.is_file():
-        for pt in _load_eval(mixed_path):
-            mixed_points_by_d.setdefault(pt["distance"], []).append(pt)
 
     for ax, d in zip(axes, _DISTANCES, strict=True):
         eval_path = eval_dir / _EVAL_FILES[d]
@@ -166,27 +156,6 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
                 zorder=3,
             )
 
-        if d in mixed_points_by_d:
-            m_pts = sorted(mixed_points_by_d[d], key=lambda pt: pt["error_prob"])
-            m_p = np.array([pt["error_prob"] for pt in m_pts])
-            m_ler = np.array([pt["decoders"]["gnn"]["ler"] for pt in m_pts])
-            m_lo = np.array([pt["decoders"]["gnn"]["ler_ci_95"][0] for pt in m_pts])
-            m_hi = np.array([pt["decoders"]["gnn"]["ler_ci_95"][1] for pt in m_pts])
-            ax.errorbar(
-                m_p,
-                m_ler,
-                yerr=[m_ler - m_lo, m_hi - m_ler],
-                color=_DECODER_COLORS["gnn_mixed"],
-                marker=_DECODER_MARKERS["gnn_mixed"],
-                markersize=7,
-                linewidth=1.8,
-                linestyle="--",
-                capsize=3,
-                capthick=1.2,
-                elinewidth=1.2,
-                zorder=3,
-            )
-
         _annotate_mcnemar(ax, points)
 
         ax.set_yscale("log")
@@ -203,9 +172,6 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
 
     axes[0].set_ylabel("Logical error rate (LER)", fontsize=10)
 
-    legend_keys = list(_DECODER_KEYS)
-    if mixed_points_by_d:
-        legend_keys.append("gnn_mixed")
     handles = [
         Line2D(
             [0],
@@ -214,10 +180,9 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
             marker=_DECODER_MARKERS[k],
             markersize=7,
             linewidth=1.8,
-            linestyle="--" if k == "gnn_mixed" else "-",
             label=_DECODER_LABELS[k],
         )
-        for k in legend_keys
+        for k in _DECODER_KEYS
     ]
     fig.tight_layout()
     fig.subplots_adjust(top=0.86, bottom=0.17)
@@ -225,7 +190,7 @@ def plot_ler_vs_p(eval_dir: Path, output_dir: Path) -> Path:
     fig.legend(
         handles=handles,
         loc="upper center",
-        ncol=len(legend_keys),
+        ncol=len(_DECODER_KEYS),
         fontsize=10,
         frameon=True,
         edgecolor="#cccccc",
@@ -414,7 +379,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--eval-dir",
         type=Path,
         default=Path("outputs"),
-        help="Root directory with runs/d{3,5,7}/memory/direct/eval.json.",
+        help="Root directory with runs/memory/d{3,5,7}/direct/eval.json.",
     )
     parser.add_argument(
         "-o",

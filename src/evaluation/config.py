@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-import yaml
-
+from config_file import read_config_fields
 from sampling.profile import require_operation, resolve_profile
 
 
@@ -94,9 +93,15 @@ class EvalConfig:
         -------
         dict
             Field name to raw value, for the fields the file sets.
+
+        Raises
+        ------
+        FileNotFoundError
+            If *path* does not exist.
+        ValueError
+            If the file sets a key no field reads, or is not a mapping.
         """
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-        return {key: raw[key] for key in _EVAL_KEYS if key in raw}
+        return read_config_fields(Path(path), _EVAL_KEYS)
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, Any]) -> EvalConfig:

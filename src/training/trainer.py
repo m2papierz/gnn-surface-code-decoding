@@ -88,9 +88,7 @@ class Trainer:
         self._contract = resolve_profile(self.cfg.operation).data_contract
 
         val_seed = stable_seed("val", f"seed={self.cfg.seed}", base=self.cfg.seed)
-        val_samples = make_frozen_val_samples(
-            settings, self.cfg, self.cfg.val_size, master_seed=val_seed
-        )
+        val_samples = make_frozen_val_samples(settings, self.cfg, master_seed=val_seed)
         self.val_loader = DataLoader(
             val_samples,
             batch_size=self.cfg.batch_size,

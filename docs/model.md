@@ -100,14 +100,13 @@ uv run scripts/train_gnn.py -c configs/train.yaml --backend compiled
 
 # Resume from checkpoint
 uv run scripts/train_gnn.py -c configs/train.yaml --resume outputs/runs/memory/d3/direct/best.pt
-
-# Mixed-distance curriculum training
-uv run scripts/train_gnn.py -c configs/train_memory_mixed_curriculum.yaml
 ```
+
+One trainer, `Trainer`, serves every operation.  A config listing several `distances` trains one model across them, each shot drawn uniformly from the selected circuits.
 
 ### Configuration
 
-All hyperparameters are set in `configs/train.yaml`.  CLI arguments override config values, so the YAML file acts as the base and CLI flags provide per-run tweaks.
+Every run names its config with `-c`; CLI arguments override its values, so the YAML file acts as the base and CLI flags provide per-run tweaks.  A key the config does not read (a misspelling, a section of a removed feature) is refused with the file and the key named, as is a config path that does not exist.
 
 ```yaml
 backend: "pytorch"

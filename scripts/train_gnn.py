@@ -1,16 +1,12 @@
 """Train a GNN-based QEC decoder.
 
-Dispatches to direct training or curriculum training based on the config:
-if the YAML contains a ``curriculum:`` section, runs ``CurriculumTrainer``;
-otherwise runs ``Trainer``.
+The config file names the experiment and every hyperparameter; CLI flags
+override single values.  Several ``distances`` train one model across them.
 
 Examples
 --------
-    # Direct training from config
+    # Train from config
     uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
-
-    # Curriculum training (detected from config)
-    uv run scripts/train_gnn.py -c configs/train_memory_mixed_curriculum.yaml
 
     # Override distances and budget
     uv run scripts/train_gnn.py -c configs/train.yaml \
@@ -26,17 +22,13 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
-import yaml
-
-from training import CurriculumConfig, CurriculumTrainer, TrainConfig, Trainer
+from training import TrainConfig, Trainer
 
 
-def parse_args(
-    argv: Sequence[str] | None = None,
-) -> tuple[TrainConfig, CurriculumConfig | None]:
-    """Parse CLI arguments into a :class:`TrainConfig` and optional curriculum.
+def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
+    """Parse CLI arguments into a :class:`TrainConfig`.
 
     CLI args override values loaded from YAML config.
     """
@@ -49,7 +41,7 @@ def parse_args(
         "-c",
         "--config",
         type=Path,
-        default=Path("configs/train.yaml"),
+        required=True,
         help="YAML config file (CLI args override config values)",
     )
     parser.add_argument(
@@ -94,20 +86,7 @@ def parse_args(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Load YAML and detect curriculum
-    curriculum_cfg: CurriculumConfig | None = None
-    fields: dict[str, Any] = {}
-    if args.config.is_file():
-        raw = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-        fields = TrainConfig.read_yaml_fields(args.config)
-        if "curriculum" in raw:
-            curriculum_cfg = CurriculumConfig.from_yaml(raw["curriculum"])
-    else:
-        logging.getLogger(__name__).warning(
-            "Config file %s not found, using defaults",
-            args.config,
-        )
-
+    fields = TrainConfig.read_yaml_fields(args.config)
     field_map = {
         "circuit_dir": args.circuit_dir,
         "output_dir": args.output_dir,
@@ -133,17 +112,12 @@ def parse_args(
     }
 
     fields.update({key: value for key, value in field_map.items() if value is not None})
-    return TrainConfig.from_fields(fields), curriculum_cfg
+    return TrainConfig.from_fields(fields)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for GNN training."""
-    cfg, curriculum_cfg = parse_args(argv)
-
-    if curriculum_cfg is not None:
-        CurriculumTrainer(cfg, curriculum_cfg).fit()
-    else:
-        Trainer(cfg).fit()
+    Trainer(parse_args(argv)).fit()
 
 
 if __name__ == "__main__":

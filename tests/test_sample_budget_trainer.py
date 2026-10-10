@@ -311,23 +311,6 @@ class TestRunDir:
         d = resolve_run_dir(Path("outputs/runs"), "memory", [3], "direct")
         assert d == Path("outputs/runs/memory/d3/direct")
 
-    def test_resolve_run_dir_curriculum_layout(self) -> None:
-        from pathlib import Path
-
-        from training.primitives import resolve_run_dir
-
-        d = resolve_run_dir(Path("outputs/runs"), "memory", None, "curriculum")
-        assert d == Path("outputs/runs/memory/mixed/curriculum")
-
-    def test_resolve_run_dir_different_strategies_disjoint(self) -> None:
-        from pathlib import Path
-
-        from training.primitives import resolve_run_dir
-
-        d1 = resolve_run_dir(Path("out"), "memory", [3], "direct")
-        d2 = resolve_run_dir(Path("out"), "memory", None, "curriculum")
-        assert d1 != d2
-
     def test_resolve_run_dir_unknown_operation_raises(self) -> None:
         from pathlib import Path
 

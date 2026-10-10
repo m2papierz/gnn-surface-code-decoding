@@ -1,6 +1,6 @@
 # gnn-surface-code-decoding
 
-End-to-end pipeline for decoding surface codes with graph neural networks: Stim circuit sampling (memory experiments and lattice-surgery operations), detector graph construction, GNN training with on-the-fly data generation (per-distance and curriculum), multi-backend inference (PyTorch, compiled, custom CUDA), statistically rigorous evaluation against classical baselines (MWPM, correlated matching, belief-matching, Tesseract), and performance benchmarking.
+End-to-end pipeline for decoding surface codes with graph neural networks: Stim circuit sampling (memory experiments and lattice-surgery operations), detector graph construction, GNN training with on-the-fly data generation, multi-backend inference (PyTorch, compiled, custom CUDA), statistically rigorous evaluation against classical baselines (MWPM, correlated matching, belief-matching, Tesseract), and performance benchmarking.
 
 ## Setup
 
@@ -48,10 +48,9 @@ uv run scripts/train_gnn.py -c configs/train.yaml
 uv run scripts/train_gnn.py -c configs/train_memory_d3_direct.yaml
 uv run scripts/train_gnn.py -c configs/train_memory_d5_direct.yaml
 uv run scripts/train_gnn.py -c configs/train_memory_d7_direct.yaml
-
-# Mixed-distance curriculum training (3 => 3+5 => 3+5+7)
-uv run scripts/train_gnn.py -c configs/train_memory_mixed_curriculum.yaml
 ```
+
+One trainer serves every operation; a config listing several `distances` trains one model across them.
 
 See [`docs/model.md`](docs/model.md) for architecture details (GINE encoder, LogicalHead, pooling), hyperparameters, and training configuration.
 

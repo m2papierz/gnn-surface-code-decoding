@@ -503,7 +503,7 @@ def parse_args(
     )
 
     fields: dict[str, Any] = {}
-    if args.config is not None and args.config.is_file():
+    if args.config is not None:
         fields = EvalConfig.read_yaml_fields(args.config)
 
     field_map: dict[str, object] = {

@@ -70,11 +70,6 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         is refused.
     include_p_feature : bool
         If ``True``, attach ``p`` as a graph-level feature.
-    distance_weights : dict mapping int to float, optional
-        Per-distance sampling weights.  Within each distance, settings
-        are sampled uniformly; across distances, the probability is
-        proportional to the weight.  If ``None``, all settings are
-        sampled uniformly (default).
     """
 
     def __init__(
@@ -85,7 +80,6 @@ class StreamingSurfaceCodeDataset(IterableDataset):
         contract: DataContract,
         metadata_extractor: MetadataExtractor,
         include_p_feature: bool = False,
-        distance_weights: dict[int, float] | None = None,
     ) -> None:
         super().__init__()
         self.settings = list(settings)
@@ -97,32 +91,6 @@ class StreamingSurfaceCodeDataset(IterableDataset):
 
         if not self.settings:
             raise ValueError("At least one CircuitSetting required")
-
-        self._setting_weights = self._compute_setting_weights(distance_weights)
-
-    def _compute_setting_weights(
-        self, distance_weights: dict[int, float] | None
-    ) -> np.ndarray | None:
-        """Convert per-distance weights to per-setting weights."""
-        if distance_weights is None:
-            return None
-
-        dist_counts: dict[int, int] = {}
-        for s in self.settings:
-            dist_counts[s.distance] = dist_counts.get(s.distance, 0) + 1
-
-        weights = np.array(
-            [
-                distance_weights.get(s.distance, 0.0) / dist_counts[s.distance]
-                for s in self.settings
-            ],
-            dtype=np.float64,
-        )
-
-        total = weights.sum()
-        if total <= 0:
-            return None
-        return weights / total
 
     @property
     def node_dim(self) -> int:
@@ -149,7 +117,6 @@ class StreamingSurfaceCodeDataset(IterableDataset):
             worker_seed,
             metadata_extractor=self._metadata_extractor,
             num_observables=self._contract.num_observables,
-            weights=self._setting_weights,
         )
 
         builder = self._builder

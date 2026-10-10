@@ -10,8 +10,8 @@ from typing import Any, Final
 
 import numpy as np
 import torch
-import yaml
 
+from config_file import read_config_fields
 from sampling.profile import require_operation, resolve_profile
 
 
@@ -171,15 +171,15 @@ class TrainConfig:
         -------
         dict
             Field name to raw value, for the fields the file sets.
+
+        Raises
+        ------
+        FileNotFoundError
+            If *path* does not exist.
+        ValueError
+            If the file sets a key no field reads, or is not a mapping.
         """
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-        fields: dict[str, Any] = {
-            key: raw[key] for key in _TOP_LEVEL_KEYS if key in raw
-        }
-        for section, keys in _SECTION_KEYS:
-            nested = raw.get(section, {})
-            fields.update({key: nested[key] for key in keys if key in nested})
-        return fields
+        return read_config_fields(Path(path), _TOP_LEVEL_KEYS, _SECTION_KEYS)
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, Any]) -> TrainConfig:
@@ -256,116 +256,6 @@ class TrainConfig:
         Validated in ``__post_init__``, so this cannot raise.
         """
         return _AMP_DTYPES[self.amp_dtype]
-
-
-@dataclass(frozen=True, slots=True)
-class CurriculumStage:
-    """One stage of the distance curriculum.
-
-    Parameters
-    ----------
-    distances : tuple of int
-        Active code distances in this stage.
-    budget : int
-        Training samples to consume in this stage.
-    """
-
-    distances: tuple[int, ...]
-    budget: int
-
-    def __post_init__(self) -> None:
-        if not self.distances:
-            raise ValueError("Stage must have at least one distance")
-        if self.budget < 1:
-            raise ValueError(f"budget must be >= 1, got {self.budget}")
-
-
-@dataclass(frozen=True, slots=True)
-class CurriculumConfig:
-    """Configuration for mixed-distance curriculum training.
-
-    Parameters
-    ----------
-    stages : tuple of CurriculumStage
-        Curriculum stages in order.  Each stage extends the active
-        distance set - once a distance enters, it never leaves.
-    mwpm_ler : dict mapping distance to float
-        Baseline MWPM LER per distance (average across p values on the
-        eval sets).  Used to compute the LER gap that drives adaptive
-        sampling weights.
-    gap_eval_interval : int
-        Re-measure per-distance LER gap every this many training
-        samples and update sampling weights.
-    min_distance_weight : float
-        Floor on per-distance sampling weight to prevent starvation.
-    val_size_per_distance : int
-        Frozen validation samples per distance for gap measurement.
-    """
-
-    stages: tuple[CurriculumStage, ...]
-    mwpm_ler: dict[int, float]
-    gap_eval_interval: int = 500_000
-    min_distance_weight: float = 0.1
-    val_size_per_distance: int = 2_000
-
-    def __post_init__(self) -> None:
-        if not self.stages:
-            raise ValueError("Must have at least one curriculum stage")
-        if self.gap_eval_interval < 1:
-            raise ValueError(
-                f"gap_eval_interval must be >= 1, got {self.gap_eval_interval}"
-            )
-        if not (0.0 < self.min_distance_weight < 1.0):
-            raise ValueError(
-                f"min_distance_weight must be in (0, 1), got {self.min_distance_weight}"
-            )
-        if self.val_size_per_distance < 1:
-            raise ValueError(
-                f"val_size_per_distance must be >= 1, got {self.val_size_per_distance}"
-            )
-        prev: set[int] = set()
-        for stage in self.stages:
-            current = set(stage.distances)
-            dropped = prev - current
-            if dropped:
-                raise ValueError(
-                    f"Curriculum violates replay: distances {dropped} "
-                    f"were in a previous stage but dropped from "
-                    f"{stage.distances}"
-                )
-            prev = current
-
-    @property
-    def total_budget(self) -> int:
-        """Total sample budget across all stages."""
-        return sum(s.budget for s in self.stages)
-
-    @classmethod
-    def from_yaml(cls, raw: dict[str, Any]) -> CurriculumConfig:
-        """Parse curriculum config from a YAML dict.
-
-        Parameters
-        ----------
-        raw : dict
-            The ``curriculum`` sub-dict from the YAML config file.
-        """
-        stages = tuple(
-            CurriculumStage(
-                distances=tuple(s["distances"]),
-                budget=s["budget"],
-            )
-            for s in raw["stages"]
-        )
-        mwpm_ler = {int(k): float(v) for k, v in raw["mwpm_ler"].items()}
-        kwargs: dict[str, Any] = {"stages": stages, "mwpm_ler": mwpm_ler}
-        for key in (
-            "gap_eval_interval",
-            "min_distance_weight",
-            "val_size_per_distance",
-        ):
-            if key in raw:
-                kwargs[key] = raw[key]
-        return cls(**kwargs)
 
 
 def seed_everything(seed: int) -> None:
