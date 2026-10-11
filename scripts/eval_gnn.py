@@ -42,7 +42,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import stim
 import torch
 
 from artifact_file import write_json
@@ -68,7 +67,11 @@ from evaluation.evaluator import (
 from evaluation.stats import wilson_interval
 from model.decoder import build_model
 from sampling.profile import resolve_profile
-from sampling.sampler import ExperimentPoint, settings_from_circuit_dir
+from sampling.sampler import (
+    ExperimentPoint,
+    sample_shots,
+    settings_from_circuit_dir,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -331,17 +334,12 @@ def _evaluate_at_setting(
     dict
         Per-setting results with LER and Wilson intervals for both decoders.
     """
-    circuit = stim.Circuit.from_file(str(point.circuit_path))
     metadata = resolve_profile(cfg.operation).metadata_extractor(
         point.circuit_path, num_observables=checkpoint.contract.num_observables
     )
-
-    sampler = circuit.compile_detector_sampler(seed=cfg.seed)
-    dets, obs = sampler.sample(
-        shots=cfg.shots, separate_observables=True, bit_packed=False
+    syndromes, observables = sample_shots(
+        point.circuit_path, shots=cfg.shots, seed=cfg.seed
     )
-    syndromes = dets.astype(np.uint8)
-    observables = obs.astype(np.uint8)
 
     gnn_decoder = GNNDecoder(
         checkpoint.model,

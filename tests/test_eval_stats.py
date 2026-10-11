@@ -182,6 +182,18 @@ class TestWilsonInterval:
         assert wi.lower < 1.0
         assert wi.lower > 0.99  # Reasonable lower bound for 1000/1000
 
+    @pytest.mark.parametrize("n_total", [1, 3, 10, 48, 1000])
+    def test_extreme_counts_close_the_interval_exactly(self, n_total: int):
+        """k = 0 bounds below at exactly 0, k = n above at exactly 1."""
+        assert wilson_interval(0, n_total).lower == 0.0
+        assert wilson_interval(n_total, n_total).upper == 1.0
+
+    @pytest.mark.parametrize("n_total", [1, 2, 3, 7, 10, 48, 1000])
+    def test_interval_contains_its_point_estimate(self, n_total: int):
+        for n_errors in range(n_total + 1):
+            wi = wilson_interval(n_errors, n_total)
+            assert wi.lower <= wi.point <= wi.upper, (n_errors, n_total)
+
     def test_interval_narrows_with_n(self):
         """Width decreases as sample size increases."""
         wi_small = wilson_interval(10, 100)

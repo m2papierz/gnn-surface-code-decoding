@@ -100,7 +100,10 @@ Generate evaluation figures:
 ```bash
 # LER vs p, and LER vs distance, from one harness report per distance
 uv run scripts/plot_results.py --reports outputs/results/eval_memory_d{3,5,7}.json
-uv run scripts/plot_calibration.py           # reliability diagrams and ECE
+# Reliability diagrams and ECE per observable, on fresh shots of the committed
+# circuits (never the frozen eval sets); the binned data lands beside the figure
+uv run scripts/plot_calibration.py --operation zz_merge_split --distance 3 \
+    --checkpoint outputs/runs/zz_merge_split/d3/<run_id>/best.pt
 ```
 
 ## Development

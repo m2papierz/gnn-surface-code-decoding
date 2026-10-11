@@ -197,3 +197,38 @@ class TestExpectedCalibrationError:
         ece_5 = expected_calibration_error(logits, labels, n_bins=5)
         ece_50 = expected_calibration_error(logits, labels, n_bins=50)
         assert ece_5 != pytest.approx(ece_50, abs=1e-10)
+
+
+class TestReliabilityDiagramReport:
+    def test_bin_positives_count_the_positive_labels_of_each_bin(self) -> None:
+        logits = np.array([_logit(0.05), _logit(0.05), _logit(0.95), _logit(0.95)])
+        labels = np.array([0, 1, 1, 1])
+        diag = reliability_diagram(logits, labels, n_bins=2)
+        np.testing.assert_array_equal(diag.bin_counts, [2, 2])
+        np.testing.assert_array_equal(diag.bin_positives, [1, 2])
+
+    def test_to_dict_lists_nonempty_bins_with_wilson_intervals(self) -> None:
+        logits = np.array([_logit(0.05)] * 10 + [_logit(0.95)] * 4)
+        labels = np.array([0] * 9 + [1] + [1] * 4)
+        report = reliability_diagram(logits, labels, n_bins=4).to_dict()
+
+        assert report["n_samples"] == 14
+        assert report["n_positives"] == 5
+        assert [(b["lower"], b["upper"]) for b in report["bins"]] == [
+            (0.0, 0.25),
+            (0.75, 1.0),
+        ]
+        low = report["bins"][0]
+        assert (low["n_samples"], low["n_positives"]) == (10, 1)
+        assert low["positive_fraction"] == pytest.approx(0.1)
+        # Wilson 95% for 1/10 from the score formula with z = 1.95996398454.
+        assert low["positive_fraction_ci_95"] == pytest.approx(
+            [0.0178762131, 0.4041500268], abs=1e-9
+        )
+        assert report["ece"] == pytest.approx(
+            expected_calibration_error(logits, labels, n_bins=4)
+        )
+
+    def test_non_finite_logit_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            reliability_diagram(np.array([0.0, np.nan]), np.array([0, 1]))

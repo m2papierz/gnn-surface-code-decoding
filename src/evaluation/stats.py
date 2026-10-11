@@ -307,8 +307,10 @@ def wilson_interval(
     center = (p_hat + z2 / (2 * n)) / denom
     half_width = z * math.sqrt(p_hat * (1 - p_hat) / n + z2 / (4 * n * n)) / denom
 
-    lower = max(0.0, center - half_width)
-    upper = min(1.0, center + half_width)
+    # At k = 0 and k = n the bound is exactly 0 or 1; the subtraction leaves
+    # rounding residue that would put the point estimate outside its interval.
+    lower = 0.0 if n_errors == 0 else max(0.0, center - half_width)
+    upper = 1.0 if n_errors == n_total else min(1.0, center + half_width)
 
     return WilsonInterval(
         lower=float(lower),

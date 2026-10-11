@@ -310,19 +310,11 @@ def report_metadata(
         JSON-ready metadata; the checkpoint is named by path and by the
         sha256 of the bytes that were loaded.
     """
-    scored = None
-    if checkpoint is not None:
-        scored = {
-            "path": str(checkpoint.path),
-            "sha256": checkpoint.sha256,
-            "samples_consumed": checkpoint.samples_consumed,
-            "decision_threshold": checkpoint.decision_threshold,
-        }
     return {
         "mode": mode.value,
         "source": str(source),
         "config": cfg.to_dict(),
-        "checkpoint": scored,
+        "checkpoint": None if checkpoint is None else checkpoint.provenance(),
         "device": str(device),
     }
 

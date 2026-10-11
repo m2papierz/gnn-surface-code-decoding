@@ -11,7 +11,7 @@ import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pymatching
@@ -224,7 +224,8 @@ class GNNDecoder:
         """Decode syndromes via GNN inference.
 
         Empty syndromes (zero fired detectors) short-circuit to no-flip
-        without reaching the model forward pass.
+        without reaching the model forward pass; every other shot is
+        predicted as its :meth:`logits` above the decision threshold.
 
         Parameters
         ----------
@@ -236,57 +237,73 @@ class GNNDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        n_shots = syndromes.shape[0]
-        num_obs = self._contract.num_observables
-        predictions = np.zeros((n_shots, num_obs), dtype=np.uint8)
-        use_amp = self._device.type == "cuda"
-
-        for start in range(0, n_shots, self._batch_size):
-            end = min(start + self._batch_size, n_shots)
-            data_list: list[Data] = []
-            nonempty_indices: list[int] = []
-
-            for i in range(start, end):
-                if int(syndromes[i].sum()) == 0:
-                    continue
-
-                graph = self._builder(syndromes[i], self._metadata)
-                if graph.num_fired == 0:
-                    continue
-
-                data_list.append(
-                    Data(
-                        x=torch.from_numpy(graph.node_features),
-                        edge_index=torch.from_numpy(graph.edge_index),
-                        edge_attr=torch.from_numpy(graph.edge_features),
-                        num_fired=torch.tensor(graph.num_fired, dtype=torch.long),
-                    )
-                )
-                nonempty_indices.append(i - start)
-
-            if not data_list:
-                continue
-
-            batch = collate_graphs(data_list, self._device)
-
-            with (
-                torch.no_grad(),
-                torch.autocast(
-                    device_type=self._device.type,
-                    enabled=use_amp,
-                    dtype=torch.bfloat16,
-                ),
-            ):
-                logits = self._model(batch)
-
-            preds = (logits > self._threshold).cpu().numpy().astype(np.uint8)
-            if preds.ndim == 1:
-                preds = preds[:, np.newaxis]
-
-            for pred_idx, local_idx in enumerate(nonempty_indices):
-                predictions[start + local_idx] = preds[pred_idx]
-
+        fired = syndromes.any(axis=1)
+        predictions = np.zeros(
+            (syndromes.shape[0], self._contract.num_observables), dtype=np.uint8
+        )
+        predictions[fired] = self.logits(syndromes[fired]) > self._threshold
         return predictions
+
+    def logits(self, syndromes: NDArray[np.uint8]) -> NDArray[np.float32]:
+        """Model logits of shots that each carry at least one detection event.
+
+        A shot without a detection event has no graph; :meth:`decode_batch`
+        decides it without the model, and a calibration excludes it.
+
+        Parameters
+        ----------
+        syndromes : ndarray, shape ``(N, D)``
+            Binary syndrome vectors, none of them all-zero.
+
+        Returns
+        -------
+        ndarray, shape ``(N, num_observables)``, float32
+            Logit of each observable flip, in shot order.
+
+        Raises
+        ------
+        ValueError
+            If a shot carries no detection event.
+        """
+        empty = np.flatnonzero(~syndromes.any(axis=1))
+        if empty.size:
+            raise ValueError(
+                f"{empty.size} of {syndromes.shape[0]} shot(s) carry no detection "
+                f"event (first at row {empty[0]}); such a shot has no graph to "
+                f"decode and is decided without the model"
+            )
+        logits = np.empty(
+            (syndromes.shape[0], self._contract.num_observables), dtype=np.float32
+        )
+        for start in range(0, syndromes.shape[0], self._batch_size):
+            stop = start + self._batch_size
+            logits[start:stop] = self._forward(syndromes[start:stop])
+        return logits
+
+    def _forward(self, syndromes: NDArray[np.uint8]) -> NDArray[np.float32]:
+        """Logits ``(B, num_observables)`` of one inference batch."""
+        graphs = []
+        for syndrome in syndromes:
+            graph = self._builder(syndrome, self._metadata)
+            graphs.append(
+                Data(
+                    x=torch.from_numpy(graph.node_features),
+                    edge_index=torch.from_numpy(graph.edge_index),
+                    edge_attr=torch.from_numpy(graph.edge_features),
+                )
+            )
+        batch = collate_graphs(graphs, self._device)
+        with (
+            torch.inference_mode(),
+            torch.autocast(
+                device_type=self._device.type,
+                enabled=self._device.type == "cuda",
+                dtype=torch.bfloat16,
+            ),
+        ):
+            # bf16 widens to float32 exactly, so the threshold compares the
+            # logits the model produced.
+            return self._model(batch).float().cpu().numpy()
 
     @classmethod
     def from_metadata(
@@ -358,6 +375,19 @@ class GNNCheckpoint:
     contract: DataContract
     decision_threshold: float
     samples_consumed: int
+
+    def provenance(self) -> dict[str, Any]:
+        """What a result scored by this model records of it, JSON-ready.
+
+        The checkpoint is named by path and by the sha256 of the bytes the
+        model was restored from, with the threshold and samples it recorded.
+        """
+        return {
+            "path": str(self.path),
+            "sha256": self.sha256,
+            "samples_consumed": self.samples_consumed,
+            "decision_threshold": self.decision_threshold,
+        }
 
 
 def load_gnn_checkpoint(

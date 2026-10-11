@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import stim
+from numpy.typing import NDArray
 
 from sampling.experiment import ExperimentKey, circuit_key, validate_operation_name
 from sampling.graph import CircuitMetadata, MetadataExtractor
@@ -168,6 +169,36 @@ def settings_from_circuit_dir(
 
     points.sort(key=lambda pt: (pt.distance, pt.rounds, pt.error_prob))
     return points
+
+
+def sample_shots(
+    circuit_path: Path, *, shots: int, seed: int
+) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+    """Sample shots of a committed circuit from one seeded Stim stream.
+
+    Parameters
+    ----------
+    circuit_path : Path
+        The ``.stim`` circuit to sample.
+    shots : int
+        Number of shots.
+    seed : int
+        Seed of the circuit's detector sampler; the same seed yields the
+        same shots.
+
+    Returns
+    -------
+    syndromes : ndarray, shape ``(shots, D)``, uint8
+        Detection events of each shot.
+    observables : ndarray, shape ``(shots, K)``, uint8
+        Logical observable flips of each shot.
+    """
+    circuit = stim.Circuit.from_file(str(circuit_path))
+    sampler = circuit.compile_detector_sampler(seed=seed)
+    detectors, observables = sampler.sample(
+        shots=shots, separate_observables=True, bit_packed=False
+    )
+    return detectors.astype(np.uint8), observables.astype(np.uint8)
 
 
 def _operation_keys(circuit_dir: Path, operation: str) -> dict[Path, ExperimentKey]:
