@@ -14,8 +14,7 @@ from dataclasses import dataclass
 
 import torch
 
-from kernels._C import fired_detector_edges as _cuda_edges
-from kernels._C import fired_detector_node_features as _cuda_node_features
+from kernels.extension import load
 from sampling.graph import EDGE_DIM, NODE_DIM, CircuitMetadata
 
 
@@ -23,9 +22,10 @@ __all__ = [
     "DeviceGraphBatch",
     "DeviceMetadata",
     "build_fired_detector_graphs",
-    "detector_coords_to_device",
     "metadata_to_device",
 ]
+
+_C = load()
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,52 +109,70 @@ class DeviceGraphBatch:
 
 @dataclass(frozen=True, slots=True)
 class DeviceMetadata:
-    """Per-circuit metadata resident on a CUDA device.
+    """Everything the graph build reads besides the syndromes, on one CUDA device.
 
-    Uploaded once via :func:`metadata_to_device` and reused across batches.
+    Uploaded once by :func:`metadata_to_device` and reused across batches.
+    Every input of the representation travels in this one record, so a build
+    cannot run with any of them missing or taken from another circuit.
 
     Parameters
     ----------
     coords : Tensor, shape ``(D, 3)``, float64
-        Detector coordinates.
+        Detector coordinates, kept float64 so the kernel normalises in double
+        precision and rounds once on store, as the numpy builder does.
     dem_weights : Tensor, shape ``(D, D)``, float32
-        Pairwise DEM error probabilities.
+        Pairwise DEM error probabilities, rounded once from float64 as the
+        numpy builder rounds its edge features.
+    distance : int
+        Code distance; spatial normalisation is ``2 * distance``.
+    rounds : int
+        Syndrome measurement rounds; temporal normalisation.
     """
 
     coords: torch.Tensor
     dem_weights: torch.Tensor
+    distance: int
+    rounds: int
 
+    @property
+    def num_detectors(self) -> int:
+        """Detector count ``D`` of the circuit."""
+        return self.coords.shape[0]
 
-def detector_coords_to_device(
-    metadata: CircuitMetadata,
-    device: torch.device | str,
-) -> torch.Tensor:
-    """Upload detector coordinates once for repeated graph builds.
-
-    Kept float64 so the kernel can normalise in double precision and round
-    once on store, exactly as the numpy builder does.
-
-    Parameters
-    ----------
-    metadata : CircuitMetadata
-        Circuit metadata whose ``detector_coords`` are uploaded.
-    device : torch.device or str
-        Target CUDA device.
-
-    Returns
-    -------
-    Tensor, shape ``(D, 3)``, float64
-    """
-    return torch.as_tensor(
-        metadata.detector_coords, dtype=torch.float64, device=device
-    ).contiguous()
+    def __post_init__(self) -> None:
+        if self.coords.dim() != 2 or self.coords.shape[1] != 3:
+            raise ValueError(
+                f"coords must have shape (D, 3), got {tuple(self.coords.shape)}"
+            )
+        if self.coords.dtype != torch.float64:
+            raise ValueError(f"coords must be float64, got {self.coords.dtype}")
+        d = self.num_detectors
+        if self.dem_weights.shape != (d, d):
+            raise ValueError(
+                f"dem_weights shape {tuple(self.dem_weights.shape)} != "
+                f"expected ({d}, {d})"
+            )
+        if self.dem_weights.dtype != torch.float32:
+            raise ValueError(
+                f"dem_weights must be float32, got {self.dem_weights.dtype}"
+            )
+        if not self.coords.is_cuda or self.dem_weights.device != self.coords.device:
+            raise ValueError(
+                "coords and dem_weights must share one CUDA device, got "
+                f"{self.coords.device} and {self.dem_weights.device}"
+            )
+        if self.distance < 1 or self.rounds < 1:
+            raise ValueError(
+                f"distance and rounds must be >= 1, got {self.distance} and "
+                f"{self.rounds}"
+            )
 
 
 def metadata_to_device(
     metadata: CircuitMetadata,
     device: torch.device | str,
 ) -> DeviceMetadata:
-    """Upload detector coordinates and DEM weights to a CUDA device.
+    """Upload what the graph build reads of *metadata* to a CUDA device.
 
     Parameters
     ----------
@@ -167,39 +185,31 @@ def metadata_to_device(
     -------
     DeviceMetadata
     """
-    dem_weights = torch.as_tensor(
-        metadata.dem_edge_weights, dtype=torch.float32, device=device
-    ).contiguous()
     return DeviceMetadata(
-        coords=detector_coords_to_device(metadata, device), dem_weights=dem_weights
+        coords=torch.as_tensor(
+            metadata.detector_coords, dtype=torch.float64, device=device
+        ).contiguous(),
+        dem_weights=torch.as_tensor(
+            metadata.dem_edge_weights, dtype=torch.float32, device=device
+        ).contiguous(),
+        distance=metadata.distance,
+        rounds=metadata.rounds,
     )
 
 
 def build_fired_detector_graphs(
     syndromes: torch.Tensor,
-    coords: torch.Tensor,
-    *,
-    distance: int,
-    rounds: int,
-    dem_weights: torch.Tensor | None = None,
+    metadata: DeviceMetadata,
 ) -> DeviceGraphBatch:
     """Build fired-detector complete graphs for a batch of syndromes.
 
     Parameters
     ----------
     syndromes : Tensor, shape ``(B, D)``
-        Binary syndrome bit-vectors on a CUDA device (``bool``, ``uint8`` or
-        any integer dtype; non-zero means fired).
-    coords : Tensor, shape ``(D, 3)``, float64
-        Detector coordinates on the same device, from
-        :func:`detector_coords_to_device`.
-    distance : int
-        Code distance, used for spatial normalisation as ``2 * distance``.
-    rounds : int
-        Syndrome measurement rounds, used for temporal normalisation.
-    dem_weights : Tensor, shape ``(D, D)``, float32, optional
-        DEM pairwise error probabilities on the same device.  From
-        :func:`metadata_to_device`.
+        Binary syndrome bit-vectors on the metadata's device (``bool``,
+        ``uint8`` or any integer dtype; non-zero means fired), ``B >= 1``.
+    metadata : DeviceMetadata
+        The circuit's metadata, from :func:`metadata_to_device`.
 
     Returns
     -------
@@ -208,39 +218,10 @@ def build_fired_detector_graphs(
     Raises
     ------
     ValueError
-        If the inputs are not CUDA tensors, are the wrong rank, or disagree
-        on the detector count.
+        If *syndromes* is not ``(B, D)`` with ``B >= 1`` and the metadata's
+        ``D``, or is not on the metadata's device.
     """
-    if syndromes.dim() != 2:
-        raise ValueError(
-            f"syndromes must have shape (B, D), got {tuple(syndromes.shape)}"
-        )
-    if not syndromes.is_cuda or not coords.is_cuda:
-        raise ValueError(
-            "syndromes and coords must be CUDA tensors "
-            f"(got {syndromes.device} and {coords.device})"
-        )
-    if coords.dim() != 2 or coords.shape[1] != 3:
-        raise ValueError(f"coords must have shape (D, 3), got {tuple(coords.shape)}")
-    if coords.shape[0] != syndromes.shape[1]:
-        raise ValueError(
-            f"coords rows {coords.shape[0]} != syndrome detectors {syndromes.shape[1]}"
-        )
-
-    num_det = coords.shape[0]
-    if dem_weights is None:
-        dem_weights = torch.zeros(
-            (num_det, num_det), dtype=torch.float32, device=syndromes.device
-        )
-    if dem_weights.shape != (num_det, num_det):
-        raise ValueError(
-            f"dem_weights shape {tuple(dem_weights.shape)} != "
-            f"expected ({num_det}, {num_det})"
-        )
-
-    num_shots = syndromes.shape[0]
-    if num_shots < 1:
-        raise ValueError("syndromes must contain at least one shot, got 0")
+    _validate_syndromes(syndromes, metadata)
     device = syndromes.device
 
     # Row-major nonzero yields fired detectors already grouped by shot and
@@ -260,22 +241,28 @@ def build_fired_detector_graphs(
     num_edges = int(edge_prefix[-1])
 
     x = torch.empty((num_nodes, NODE_DIM), dtype=torch.float32, device=device)
-    slot = torch.arange(num_nodes, dtype=torch.int64, device=device)
-    _cuda_node_features(coords, detector, slot, x, distance, rounds)
+    _C.fired_detector_node_features(
+        coords=metadata.coords,
+        detector=detector,
+        slot=torch.arange(num_nodes, dtype=torch.int64, device=device),
+        out=x,
+        distance=metadata.distance,
+        rounds=metadata.rounds,
+    )
 
     edge_index = torch.empty((2, num_edges), dtype=torch.int64, device=device)
     edge_attr = torch.empty((num_edges, EDGE_DIM), dtype=torch.float32, device=device)
-    _cuda_edges(
-        x,
-        edge_prefix,
-        node_prefix[:-1],
-        node_count,
-        edge_prefix[:-1],
-        dem_weights,
-        detector,
-        edge_index,
-        edge_attr,
-        num_edges,
+    _C.fired_detector_edges(
+        node_features=x,
+        edge_prefix=edge_prefix,
+        node_base=node_prefix[:-1],
+        node_count=node_count,
+        edge_base=edge_prefix[:-1],
+        dem_weights=metadata.dem_weights,
+        detector_ids=detector,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        num_edges=num_edges,
     )
 
     return DeviceGraphBatch(
@@ -284,8 +271,27 @@ def build_fired_detector_graphs(
         edge_attr=edge_attr,
         batch=shot,
         num_fired=node_count,
-        num_graphs=num_shots,
+        num_graphs=syndromes.shape[0],
     )
+
+
+def _validate_syndromes(syndromes: torch.Tensor, metadata: DeviceMetadata) -> None:
+    """Raise unless *syndromes* is a non-empty ``(B, D)`` batch for *metadata*."""
+    if syndromes.dim() != 2 or syndromes.shape[0] < 1:
+        raise ValueError(
+            "syndromes must have shape (B, D) with B >= 1, "
+            f"got {tuple(syndromes.shape)}"
+        )
+    if syndromes.shape[1] != metadata.num_detectors:
+        raise ValueError(
+            f"syndrome detectors {syndromes.shape[1]} != metadata detectors "
+            f"{metadata.num_detectors}"
+        )
+    if syndromes.device != metadata.coords.device:
+        raise ValueError(
+            f"syndromes on {syndromes.device} but the metadata on "
+            f"{metadata.coords.device}; both must be on one CUDA device"
+        )
 
 
 def _exclusive_prefix(counts: torch.Tensor) -> torch.Tensor:

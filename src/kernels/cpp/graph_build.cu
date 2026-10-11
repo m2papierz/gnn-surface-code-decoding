@@ -20,6 +20,8 @@
  * Target: sm_80+ (Ampere, Ada Lovelace).
  */
 
+#include "graph_build.h"
+
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
@@ -173,123 +175,123 @@ namespace qec {
             );
         }
     }  // anonymous namespace
-
-    // ------------------------------------------------------------------
-    // Host entry points
-    // ------------------------------------------------------------------
-
-    void fired_detector_node_features(
-        torch::Tensor coords,
-        torch::Tensor detector,
-        torch::Tensor slot,
-        torch::Tensor out,
-        int64_t distance,
-        int64_t rounds
-    ) {
-        TORCH_CHECK(coords.is_cuda() && coords.is_contiguous(),
-                    "coords must be a contiguous CUDA tensor");
-        TORCH_CHECK(coords.scalar_type() == torch::kFloat64,
-                    "coords must be float64 to match the numpy reference");
-        TORCH_CHECK(coords.dim() == 2 && coords.size(1) == kCoordDim,
-                    "coords must have shape (D, 3), got ", coords.sizes());
-        TORCH_CHECK(out.is_cuda() && out.is_contiguous(),
-                    "out must be a contiguous CUDA tensor");
-        TORCH_CHECK(out.scalar_type() == torch::kFloat32, "out must be float32");
-        TORCH_CHECK(out.dim() == 2 && out.size(1) == kNodeDim,
-                    "out must have shape (M, 6), got ", out.sizes());
-        TORCH_CHECK(distance >= 1, "distance must be >= 1, got ", distance);
-        TORCH_CHECK(rounds >= 1, "rounds must be >= 1, got ", rounds);
-
-        const int64_t num_nodes{detector.size(0)};
-        check_index_vector(detector, "detector", num_nodes);
-        check_index_vector(slot, "slot", num_nodes);
-        if (num_nodes == 0) return;
-
-        const auto stream{at::cuda::getCurrentCUDAStream()};
-        node_features_kernel<<<grid_for(num_nodes), kBlockSize, 0, stream>>>(
-            coords.data_ptr<double>(),
-            detector.data_ptr<int64_t>(),
-            slot.data_ptr<int64_t>(),
-            out.data_ptr<float>(),
-            num_nodes,
-            2.0 * static_cast<double>(distance),
-            static_cast<double>(rounds),
-            static_cast<double>(distance)
-        );
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-    }
-
-    void fired_detector_edges(
-        torch::Tensor node_features,
-        torch::Tensor edge_prefix,
-        torch::Tensor node_base,
-        torch::Tensor node_count,
-        torch::Tensor edge_base,
-        torch::Tensor dem_weights,
-        torch::Tensor detector_ids,
-        torch::Tensor edge_index,
-        torch::Tensor edge_attr,
-        int64_t num_edges
-    ) {
-        TORCH_CHECK(node_features.is_cuda() && node_features.is_contiguous(),
-                    "node_features must be a contiguous CUDA tensor");
-        TORCH_CHECK(node_features.scalar_type() == torch::kFloat32,
-                    "node_features must be float32");
-        TORCH_CHECK(node_features.dim() == 2 && node_features.size(1) == kNodeDim,
-                    "node_features must have shape (M, 6), got ",
-                    node_features.sizes());
-        TORCH_CHECK(dem_weights.is_cuda() && dem_weights.is_contiguous(),
-                    "dem_weights must be a contiguous CUDA tensor");
-        TORCH_CHECK(dem_weights.scalar_type() == torch::kFloat32,
-                    "dem_weights must be float32");
-        TORCH_CHECK(dem_weights.dim() == 2
-                    && dem_weights.size(0) == dem_weights.size(1),
-                    "dem_weights must have shape (D, D), got ",
-                    dem_weights.sizes());
-        check_index_vector(detector_ids, "detector_ids",
-                           node_features.size(0));
-        TORCH_CHECK(edge_index.is_cuda() && edge_index.is_contiguous(),
-                    "edge_index must be a contiguous CUDA tensor");
-        TORCH_CHECK(edge_index.scalar_type() == torch::kInt64,
-                    "edge_index must be int64");
-        TORCH_CHECK(edge_index.dim() == 2 && edge_index.size(0) == 2,
-                    "edge_index must have shape (2, Me), got ", edge_index.sizes());
-        TORCH_CHECK(edge_attr.is_cuda() && edge_attr.is_contiguous(),
-                    "edge_attr must be a contiguous CUDA tensor");
-        TORCH_CHECK(edge_attr.scalar_type() == torch::kFloat32,
-                    "edge_attr must be float32");
-        TORCH_CHECK(edge_attr.dim() == 2 && edge_attr.size(1) == kEdgeDim,
-                    "edge_attr must have shape (Me, 6), got ", edge_attr.sizes());
-        TORCH_CHECK(edge_attr.size(0) == edge_index.size(1),
-                    "edge_attr rows ", edge_attr.size(0),
-                    " != edge_index columns ", edge_index.size(1));
-        TORCH_CHECK(num_edges >= 0 && num_edges <= edge_index.size(1),
-                    "num_edges ", num_edges, " exceeds buffer capacity ",
-                    edge_index.size(1));
-
-        const int64_t num_shots{node_base.size(0)};
-        check_index_vector(edge_prefix, "edge_prefix", num_shots + 1);
-        check_index_vector(node_base, "node_base", num_shots);
-        check_index_vector(node_count, "node_count", num_shots);
-        check_index_vector(edge_base, "edge_base", num_shots);
-        if (num_edges == 0) return;
-
-        const auto stream{at::cuda::getCurrentCUDAStream()};
-        edge_kernel<<<grid_for(num_edges), kBlockSize, 0, stream>>>(
-            node_features.data_ptr<float>(),
-            edge_prefix.data_ptr<int64_t>(),
-            node_base.data_ptr<int64_t>(),
-            node_count.data_ptr<int64_t>(),
-            edge_base.data_ptr<int64_t>(),
-            dem_weights.data_ptr<float>(),
-            detector_ids.data_ptr<int64_t>(),
-            dem_weights.size(0),
-            edge_index.data_ptr<int64_t>(),
-            edge_attr.data_ptr<float>(),
-            num_edges,
-            edge_index.size(1),
-            num_shots
-        );
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-    }
 }  // namespace qec
+
+// ------------------------------------------------------------------
+// Host entry points
+// ------------------------------------------------------------------
+
+void qec::fired_detector_node_features(
+    torch::Tensor coords,
+    torch::Tensor detector,
+    torch::Tensor slot,
+    torch::Tensor out,
+    int64_t distance,
+    int64_t rounds
+) {
+    TORCH_CHECK(coords.is_cuda() && coords.is_contiguous(),
+                "coords must be a contiguous CUDA tensor");
+    TORCH_CHECK(coords.scalar_type() == torch::kFloat64,
+                "coords must be float64 to match the numpy reference");
+    TORCH_CHECK(coords.dim() == 2 && coords.size(1) == kCoordDim,
+                "coords must have shape (D, 3), got ", coords.sizes());
+    TORCH_CHECK(out.is_cuda() && out.is_contiguous(),
+                "out must be a contiguous CUDA tensor");
+    TORCH_CHECK(out.scalar_type() == torch::kFloat32, "out must be float32");
+    TORCH_CHECK(out.dim() == 2 && out.size(1) == kNodeDim,
+                "out must have shape (M, 6), got ", out.sizes());
+    TORCH_CHECK(distance >= 1, "distance must be >= 1, got ", distance);
+    TORCH_CHECK(rounds >= 1, "rounds must be >= 1, got ", rounds);
+
+    const int64_t num_nodes{detector.size(0)};
+    check_index_vector(detector, "detector", num_nodes);
+    check_index_vector(slot, "slot", num_nodes);
+    if (num_nodes == 0) return;
+
+    const auto stream{at::cuda::getCurrentCUDAStream()};
+    node_features_kernel<<<grid_for(num_nodes), kBlockSize, 0, stream>>>(
+        coords.data_ptr<double>(),
+        detector.data_ptr<int64_t>(),
+        slot.data_ptr<int64_t>(),
+        out.data_ptr<float>(),
+        num_nodes,
+        2.0 * static_cast<double>(distance),
+        static_cast<double>(rounds),
+        static_cast<double>(distance)
+    );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void qec::fired_detector_edges(
+    torch::Tensor node_features,
+    torch::Tensor edge_prefix,
+    torch::Tensor node_base,
+    torch::Tensor node_count,
+    torch::Tensor edge_base,
+    torch::Tensor dem_weights,
+    torch::Tensor detector_ids,
+    torch::Tensor edge_index,
+    torch::Tensor edge_attr,
+    int64_t num_edges
+) {
+    TORCH_CHECK(node_features.is_cuda() && node_features.is_contiguous(),
+                "node_features must be a contiguous CUDA tensor");
+    TORCH_CHECK(node_features.scalar_type() == torch::kFloat32,
+                "node_features must be float32");
+    TORCH_CHECK(node_features.dim() == 2 && node_features.size(1) == kNodeDim,
+                "node_features must have shape (M, 6), got ",
+                node_features.sizes());
+    TORCH_CHECK(dem_weights.is_cuda() && dem_weights.is_contiguous(),
+                "dem_weights must be a contiguous CUDA tensor");
+    TORCH_CHECK(dem_weights.scalar_type() == torch::kFloat32,
+                "dem_weights must be float32");
+    TORCH_CHECK(dem_weights.dim() == 2
+                && dem_weights.size(0) == dem_weights.size(1),
+                "dem_weights must have shape (D, D), got ",
+                dem_weights.sizes());
+    check_index_vector(detector_ids, "detector_ids",
+                       node_features.size(0));
+    TORCH_CHECK(edge_index.is_cuda() && edge_index.is_contiguous(),
+                "edge_index must be a contiguous CUDA tensor");
+    TORCH_CHECK(edge_index.scalar_type() == torch::kInt64,
+                "edge_index must be int64");
+    TORCH_CHECK(edge_index.dim() == 2 && edge_index.size(0) == 2,
+                "edge_index must have shape (2, Me), got ", edge_index.sizes());
+    TORCH_CHECK(edge_attr.is_cuda() && edge_attr.is_contiguous(),
+                "edge_attr must be a contiguous CUDA tensor");
+    TORCH_CHECK(edge_attr.scalar_type() == torch::kFloat32,
+                "edge_attr must be float32");
+    TORCH_CHECK(edge_attr.dim() == 2 && edge_attr.size(1) == kEdgeDim,
+                "edge_attr must have shape (Me, 6), got ", edge_attr.sizes());
+    TORCH_CHECK(edge_attr.size(0) == edge_index.size(1),
+                "edge_attr rows ", edge_attr.size(0),
+                " != edge_index columns ", edge_index.size(1));
+    TORCH_CHECK(num_edges >= 0 && num_edges <= edge_index.size(1),
+                "num_edges ", num_edges, " exceeds buffer capacity ",
+                edge_index.size(1));
+
+    const int64_t num_shots{node_base.size(0)};
+    check_index_vector(edge_prefix, "edge_prefix", num_shots + 1);
+    check_index_vector(node_base, "node_base", num_shots);
+    check_index_vector(node_count, "node_count", num_shots);
+    check_index_vector(edge_base, "edge_base", num_shots);
+    if (num_edges == 0) return;
+
+    const auto stream{at::cuda::getCurrentCUDAStream()};
+    edge_kernel<<<grid_for(num_edges), kBlockSize, 0, stream>>>(
+        node_features.data_ptr<float>(),
+        edge_prefix.data_ptr<int64_t>(),
+        node_base.data_ptr<int64_t>(),
+        node_count.data_ptr<int64_t>(),
+        edge_base.data_ptr<int64_t>(),
+        dem_weights.data_ptr<float>(),
+        detector_ids.data_ptr<int64_t>(),
+        dem_weights.size(0),
+        edge_index.data_ptr<int64_t>(),
+        edge_attr.data_ptr<float>(),
+        num_edges,
+        edge_index.size(1),
+        num_shots
+    );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}

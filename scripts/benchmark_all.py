@@ -8,7 +8,9 @@ shapes derived from Stim-sampled syndromes.
 graph representation, and which backends are available.  The CUDA fast path
 (custom kernels, bucketed CUDA-Graphs) is spatial-only; for non-spatial
 representations (e.g. phased), only the PyTorch and compiled backends are
-measured, and the output carries a comparability caveat.
+measured, and the output carries a comparability caveat.  For a spatial
+representation the fast-path rows are required: an extension that does not
+load fails the run instead of leaving them out of the table.
 
 GNN backends tested (where available):
 
@@ -191,22 +193,16 @@ def _run_backend(
     *,
     ops_backend: str = "pytorch",
     compile_model: bool = False,
-) -> dict | None:
-    try:
-        set_backend(ops_backend)
-    except RuntimeError as exc:
-        logger.warning("%s unavailable: %s", name, exc)
-        return None
+) -> dict:
+    set_backend(ops_backend)
 
     torch.cuda.reset_peak_memory_stats()
 
-    m = model
-    if compile_model:
-        try:
-            m = torch.compile(model, mode="default", fullgraph=False)
-        except Exception as exc:
-            logger.warning("%s unavailable: %s", name, exc)
-            return None
+    m = (
+        torch.compile(model, mode="default", fullgraph=False)
+        if compile_model
+        else model
+    )
 
     @torch.no_grad()
     def fn() -> None:
@@ -248,37 +244,23 @@ def _run_device_path(
     *,
     contract: DataContract,
     end_to_end: bool,
-) -> dict | None:
+) -> dict:
     """Time the bucketed forward, optionally including the graph build.
 
     With *end_to_end* the timed region starts at syndromes already resident in
     device memory, which is the shape of the deployed latency path.
     """
-    try:
-        import kernels
-
-        if not kernels.AVAILABLE:
-            return None
-        from kernels.bucketed import BucketedGraphRunner
-        from kernels.graph_build import (
-            build_fired_detector_graphs,
-            metadata_to_device,
-        )
-    except ImportError:
-        return None
+    # Imported here because these modules load the compiled extension, which
+    # only spatial representations need; for them a missing build fails here.
+    from kernels.bucketed import BucketedGraphRunner
+    from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
 
     set_backend("cuda")
     dev_meta = metadata_to_device(metadata, device)
     device_syn = torch.as_tensor(syndromes, device=device)
 
     def build():
-        return build_fired_detector_graphs(
-            device_syn,
-            dev_meta.coords,
-            distance=metadata.distance,
-            rounds=metadata.rounds,
-            dem_weights=dev_meta.dem_weights,
-        )
+        return build_fired_detector_graphs(device_syn, dev_meta)
 
     prebuilt = build()
     runner = BucketedGraphRunner(model, contract=contract, batch_size=len(syndromes))
@@ -394,7 +376,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     rows: list[dict] = []
 
-    gnn_backends: list[tuple[str, Callable[[], dict | None]]] = [
+    gnn_backends: list[tuple[str, Callable[[], dict]]] = [
         (
             "pytorch",
             lambda: _run_backend("pytorch", model, pyg_batch, args.n_iters),
@@ -434,7 +416,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             ]
         )
 
-    classical_backends: list[tuple[str, Callable[[], dict | None]]] = []
+    classical_backends: list[tuple[str, Callable[[], dict]]] = []
     if not args.skip_belief_matching:
         classical_backends.append(
             (
@@ -456,8 +438,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger.info("%-24s skipped (--skip-%s)", name, name)
             continue
         result = run_fn()
-        if result is None:
-            continue
         p50 = result["p50_ms"]
         result["per_shot_p50_us"] = (
             round(p50 * 1000.0 / args.batch_size, 2) if p50 > 0 else 0

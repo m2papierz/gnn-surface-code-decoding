@@ -15,6 +15,8 @@ tier 2
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 import torch
 import torch.nn as nn
@@ -161,29 +163,29 @@ class TestBackendManagement:
         assert get_backend() == Backend.COMPILED
         set_backend("pytorch")
 
-    def test_cuda_request_never_silently_downgrades(self) -> None:
+    def test_cuda_request_never_silently_downgrades(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A mislabelled backend is worse than a missing one.
 
         A silent downgrade to pytorch would let a benchmark row or an
-        equivalence test carry the name of a backend that never ran.
+        equivalence test carry the name of a backend that never ran.  The
+        extension is made unimportable, so this runs on every machine.
         """
-        try:
-            import kernels
-
-            built = kernels.AVAILABLE
-        except ImportError:
-            built = False
-
         set_backend("pytorch")
-        if built:
+        monkeypatch.setitem(sys.modules, "kernels.ops", None)
+
+        with pytest.raises(RuntimeError, match="not importable"):
             set_backend("cuda")
-            assert get_backend() == Backend.CUDA
-            set_backend("pytorch")
-        else:
-            with pytest.raises(RuntimeError, match="not importable"):
-                set_backend("cuda")
-            # The failed request left the active backend untouched.
-            assert get_backend() == Backend.PYTORCH
+        # The failed request left the active backend untouched.
+        assert get_backend() == Backend.PYTORCH
+
+    @pytest.mark.usefixtures("cuda_extension")
+    def test_cuda_request_is_served_by_the_built_extension(self) -> None:
+        set_backend("pytorch")
+        set_backend("cuda")
+        assert get_backend() == Backend.CUDA
+        set_backend("pytorch")
 
     def test_invalid_backend_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -197,20 +199,7 @@ class TestBackendManagement:
         set_backend("pytorch")
 
 
-def _cuda_ops_available() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    try:
-        import kernels
-
-        return kernels.AVAILABLE
-    except ImportError:
-        return False
-
-
-pytestmark_cuda = pytest.mark.skipif(
-    not _cuda_ops_available(), reason="CUDA ops not built or no GPU"
-)
+pytestmark_cuda = pytest.mark.usefixtures("cuda_extension")
 
 
 @pytestmark_cuda

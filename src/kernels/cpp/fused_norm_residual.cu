@@ -4,6 +4,8 @@
  * Replaces 3 separate kernels: LayerNorm -> Dropout -> Add.
  */
 
+#include "fused_norm_residual.h"
+
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAGeneratorImpl.h>
@@ -172,79 +174,79 @@ namespace qec {
             return static_cast<size_t>(64 + 2 * H + 2) * sizeof(float);
         }
     }  // anonymous namespace
-
-    // ------------------------------------------------------------------
-    // Host entry point
-    // ------------------------------------------------------------------
-
-    torch::Tensor fused_norm_residual_dropout(
-        torch::Tensor input,
-        torch::Tensor residual,
-        torch::Tensor gamma,
-        torch::Tensor beta,
-        float dropout_p,
-        bool training
-    ) {
-        TORCH_CHECK(
-            input.is_cuda() && input.is_contiguous(),
-            "input must be a contiguous CUDA tensor"
-        );
-        TORCH_CHECK(
-            residual.is_cuda() && residual.is_contiguous(),
-            "residual must be a contiguous CUDA tensor"
-        );
-        TORCH_CHECK(
-            gamma.is_cuda() && gamma.is_contiguous(),
-            "gamma must be a contiguous CUDA tensor"
-        );
-        TORCH_CHECK(
-            beta.is_cuda() && beta.is_contiguous(),
-            "beta must be a contiguous CUDA tensor"
-        );
-
-        const int N{static_cast<int>(input.size(0))};
-        const int H{static_cast<int>(input.size(1))};
-
-        auto output{torch::empty_like(input)};
-        if (N == 0) return output;
-
-        const int threads{select_threads(H)};
-        const size_t smem{shared_mem_bytes(H)};
-        const auto stream{at::cuda::getCurrentCUDAStream()};
-
-        // Draw seed from PyTorch's default CUDA generator for reproducibility.
-        unsigned long long rng_seed{0ULL};
-        if (training && dropout_p > 0.0f) {
-            auto gen{at::cuda::detail::getDefaultCUDAGenerator()};
-            std::lock_guard<std::mutex> lock(gen.mutex());
-            rng_seed = gen.current_seed();
-        }
-
-        if (training) {
-            fused_layernorm_residual_dropout_kernel<true>
-                <<<N, threads, smem, stream>>>(
-                    input.data_ptr<float>(),
-                    residual.data_ptr<float>(),
-                    gamma.data_ptr<float>(),
-                    beta.data_ptr<float>(),
-                    output.data_ptr<float>(),
-                    N, H,
-                    dropout_p, rng_seed
-                );
-        } else {
-            fused_layernorm_residual_dropout_kernel<false>
-                <<<N, threads, smem, stream>>>(
-                    input.data_ptr<float>(),
-                    residual.data_ptr<float>(),
-                    gamma.data_ptr<float>(),
-                    beta.data_ptr<float>(),
-                    output.data_ptr<float>(),
-                    N, H,
-                    dropout_p, rng_seed
-                );
-        }
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-        return output;
-    }
 }  // namespace qec
+
+// ------------------------------------------------------------------
+// Host entry point
+// ------------------------------------------------------------------
+
+torch::Tensor qec::fused_norm_residual_dropout(
+    torch::Tensor input,
+    torch::Tensor residual,
+    torch::Tensor gamma,
+    torch::Tensor beta,
+    float dropout_p,
+    bool training
+) {
+    TORCH_CHECK(
+        input.is_cuda() && input.is_contiguous(),
+        "input must be a contiguous CUDA tensor"
+    );
+    TORCH_CHECK(
+        residual.is_cuda() && residual.is_contiguous(),
+        "residual must be a contiguous CUDA tensor"
+    );
+    TORCH_CHECK(
+        gamma.is_cuda() && gamma.is_contiguous(),
+        "gamma must be a contiguous CUDA tensor"
+    );
+    TORCH_CHECK(
+        beta.is_cuda() && beta.is_contiguous(),
+        "beta must be a contiguous CUDA tensor"
+    );
+
+    const int N{static_cast<int>(input.size(0))};
+    const int H{static_cast<int>(input.size(1))};
+
+    auto output{torch::empty_like(input)};
+    if (N == 0) return output;
+
+    const int threads{select_threads(H)};
+    const size_t smem{shared_mem_bytes(H)};
+    const auto stream{at::cuda::getCurrentCUDAStream()};
+
+    // Draw seed from PyTorch's default CUDA generator for reproducibility.
+    unsigned long long rng_seed{0ULL};
+    if (training && dropout_p > 0.0f) {
+        auto gen{at::cuda::detail::getDefaultCUDAGenerator()};
+        std::lock_guard<std::mutex> lock(gen.mutex());
+        rng_seed = gen.current_seed();
+    }
+
+    if (training) {
+        fused_layernorm_residual_dropout_kernel<true>
+            <<<N, threads, smem, stream>>>(
+                input.data_ptr<float>(),
+                residual.data_ptr<float>(),
+                gamma.data_ptr<float>(),
+                beta.data_ptr<float>(),
+                output.data_ptr<float>(),
+                N, H,
+                dropout_p, rng_seed
+            );
+    } else {
+        fused_layernorm_residual_dropout_kernel<false>
+            <<<N, threads, smem, stream>>>(
+                input.data_ptr<float>(),
+                residual.data_ptr<float>(),
+                gamma.data_ptr<float>(),
+                beta.data_ptr<float>(),
+                output.data_ptr<float>(),
+                N, H,
+                dropout_p, rng_seed
+            );
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return output;
+}

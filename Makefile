@@ -1,4 +1,4 @@
-.PHONY: install setup fmt lint check test clean
+.PHONY: install setup fmt lint check test kernels clean
 
 UV  ?= uv
 RUN := $(UV) run --locked
@@ -34,6 +34,11 @@ check:
 
 test:
 	$(RUN) pytest
+
+# ── CUDA kernels ─────────────────────────────────────────────────────────────
+
+kernels:
+	$(RUN) python scripts/build_kernels.py
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 

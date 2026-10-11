@@ -26,19 +26,7 @@ CIRCUITS = {
 }
 
 
-def _kernels_available() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    try:
-        import kernels
-    except ImportError:
-        return False
-    return kernels.AVAILABLE
-
-
-pytestmark = pytest.mark.skipif(
-    not _kernels_available(), reason="CUDA kernels not built or no GPU"
-)
+pytestmark = pytest.mark.usefixtures("cuda_extension")
 
 
 def _metadata(distance: int) -> CircuitMetadata:
@@ -53,18 +41,11 @@ def _sample(distance: int, n_shots: int, seed: int = 7) -> np.ndarray:
 
 
 def _build_on_device(syndromes: np.ndarray, metadata: CircuitMetadata):
-    from kernels.graph_build import (
-        build_fired_detector_graphs,
-        detector_coords_to_device,
-    )
+    from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
 
-    coords = detector_coords_to_device(metadata, "cuda")
     device_syndromes = torch.as_tensor(syndromes, device="cuda")
     return build_fired_detector_graphs(
-        device_syndromes,
-        coords,
-        distance=metadata.distance,
-        rounds=metadata.rounds,
+        device_syndromes, metadata_to_device(metadata, "cuda")
     )
 
 
@@ -168,55 +149,110 @@ class TestDegenerateShapes:
 
 class TestValidation:
     def test_rejects_cpu_syndromes(self) -> None:
-        from kernels.graph_build import build_fired_detector_graphs
+        from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
 
         metadata = _metadata(3)
-        coords = torch.zeros(metadata.num_detectors, 3, dtype=torch.float64).cuda()
-        with pytest.raises(ValueError, match="must be CUDA tensors"):
+        with pytest.raises(ValueError, match="must be on one CUDA device"):
             build_fired_detector_graphs(
                 torch.zeros(2, metadata.num_detectors, dtype=torch.uint8),
-                coords,
-                distance=3,
-                rounds=3,
+                metadata_to_device(metadata, "cuda"),
             )
 
     def test_rejects_rank_one_syndromes(self) -> None:
-        from kernels.graph_build import build_fired_detector_graphs
+        from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
 
         metadata = _metadata(3)
-        coords = torch.zeros(metadata.num_detectors, 3, dtype=torch.float64).cuda()
         with pytest.raises(ValueError, match=r"shape \(B, D\)"):
             build_fired_detector_graphs(
                 torch.zeros(metadata.num_detectors, dtype=torch.uint8).cuda(),
-                coords,
-                distance=3,
-                rounds=3,
+                metadata_to_device(metadata, "cuda"),
+            )
+
+    def test_rejects_empty_batch(self) -> None:
+        from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
+
+        metadata = _metadata(3)
+        with pytest.raises(ValueError, match="B >= 1"):
+            build_fired_detector_graphs(
+                torch.zeros(0, metadata.num_detectors, dtype=torch.uint8).cuda(),
+                metadata_to_device(metadata, "cuda"),
             )
 
     def test_rejects_detector_count_mismatch(self) -> None:
-        from kernels.graph_build import build_fired_detector_graphs
+        from kernels.graph_build import build_fired_detector_graphs, metadata_to_device
 
-        coords = torch.zeros(24, 3, dtype=torch.float64).cuda()
-        with pytest.raises(ValueError, match="!= syndrome detectors"):
+        metadata = _metadata(3)
+        with pytest.raises(ValueError, match="!= metadata detectors"):
             build_fired_detector_graphs(
-                torch.zeros(2, 25, dtype=torch.uint8).cuda(),
-                coords,
+                torch.zeros(2, metadata.num_detectors + 1, dtype=torch.uint8).cuda(),
+                metadata_to_device(metadata, "cuda"),
+            )
+
+    def test_kernel_rejects_float32_coords(self, cuda_extension) -> None:
+        with pytest.raises(RuntimeError, match="float64"):
+            cuda_extension.fired_detector_node_features(
+                coords=torch.zeros(4, 3, dtype=torch.float32).cuda(),
+                detector=torch.zeros(1, dtype=torch.int64).cuda(),
+                slot=torch.zeros(1, dtype=torch.int64).cuda(),
+                out=torch.zeros(1, 6, dtype=torch.float32).cuda(),
                 distance=3,
                 rounds=3,
             )
 
-    def test_kernel_rejects_float32_coords(self) -> None:
-        from kernels._C import fired_detector_node_features
 
-        with pytest.raises(RuntimeError, match="float64"):
-            fired_detector_node_features(
-                torch.zeros(4, 3, dtype=torch.float32).cuda(),
-                torch.zeros(1, dtype=torch.int64).cuda(),
-                torch.zeros(1, dtype=torch.int64).cuda(),
-                torch.zeros(1, 6, dtype=torch.float32).cuda(),
-                3,
-                3,
-            )
+class TestDeviceMetadataRecord:
+    """Every input of the representation is present, typed and co-located."""
+
+    @staticmethod
+    def _fields(metadata: CircuitMetadata) -> dict:
+        from kernels.graph_build import metadata_to_device
+
+        uploaded = metadata_to_device(metadata, "cuda")
+        return {
+            "coords": uploaded.coords,
+            "dem_weights": uploaded.dem_weights,
+            "distance": uploaded.distance,
+            "rounds": uploaded.rounds,
+        }
+
+    def test_uploads_every_builder_input(self) -> None:
+        from kernels.graph_build import metadata_to_device
+
+        metadata = _metadata(5)
+        uploaded = metadata_to_device(metadata, "cuda")
+
+        np.testing.assert_array_equal(
+            uploaded.coords.cpu().numpy(), metadata.detector_coords
+        )
+        np.testing.assert_array_equal(
+            uploaded.dem_weights.cpu().numpy(),
+            metadata.dem_edge_weights.astype(np.float32),
+        )
+        assert (uploaded.distance, uploaded.rounds) == (5, 5)
+
+    def test_rejects_float32_coords(self) -> None:
+        from kernels.graph_build import DeviceMetadata
+
+        fields = self._fields(_metadata(3))
+        fields["coords"] = fields["coords"].float()
+        with pytest.raises(ValueError, match="coords must be float64"):
+            DeviceMetadata(**fields)
+
+    def test_rejects_dem_weights_of_another_circuit(self) -> None:
+        from kernels.graph_build import DeviceMetadata
+
+        fields = self._fields(_metadata(3))
+        fields["dem_weights"] = self._fields(_metadata(5))["dem_weights"]
+        with pytest.raises(ValueError, match="dem_weights shape"):
+            DeviceMetadata(**fields)
+
+    def test_rejects_host_resident_tensors(self) -> None:
+        from kernels.graph_build import DeviceMetadata
+
+        fields = self._fields(_metadata(3))
+        fields["dem_weights"] = fields["dem_weights"].cpu()
+        with pytest.raises(ValueError, match="share one CUDA device"):
+            DeviceMetadata(**fields)
 
 
 class TestDeviceGraphBatchRecord:

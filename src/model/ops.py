@@ -149,9 +149,7 @@ def set_backend(backend: str | Backend) -> None:
             import kernels.ops as _mod
         except ImportError as exc:
             raise RuntimeError(
-                "cuda backend requested but the CUDA extension is not importable; "
-                "build it with `uv run python scripts/build_kernels.py build_ext "
-                f"--inplace` or select another backend ({exc})"
+                f"cuda backend requested but not importable: {exc}"
             ) from exc
         _cuda_module = _mod
 

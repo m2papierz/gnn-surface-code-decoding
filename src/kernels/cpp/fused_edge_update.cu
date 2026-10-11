@@ -36,6 +36,8 @@
  * Target: sm_80+ (Ampere, Ada Lovelace).
  */
 
+#include "fused_edge_update.h"
+
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
@@ -200,79 +202,79 @@ namespace qec {
             );
         }
     }  // anonymous namespace
-
-    // ------------------------------------------------------------------
-    // Host entry point
-    // ------------------------------------------------------------------
-
-    torch::Tensor fused_edge_update(
-        torch::Tensor node_term,   // (N, H_out) = h @ W_sum^T, precomputed
-        torch::Tensor node_h,      // (N, H)
-        torch::Tensor edge_h,      // (E, H)
-        torch::Tensor weight,      // (H_out, 2H) = [W_diff | W_edge]
-        c10::optional<torch::Tensor> bias,
-        torch::Tensor edge_index   // (2, E)
-    ) {
-        TORCH_CHECK(node_h.is_cuda() && node_h.is_contiguous(),
-                    "node_h must be a contiguous CUDA tensor");
-        TORCH_CHECK(node_h.dim() == 2, "node_h must have shape (N, H), got ",
-                    node_h.sizes());
-        TORCH_CHECK(node_h.scalar_type() == torch::kFloat32,
-                    "node_h must be float32");
-
-        const int64_t num_nodes{node_h.size(0)};
-        const int64_t hidden{node_h.size(1)};
-        const int64_t out_dim{weight.size(0)};
-
-        TORCH_CHECK(edge_index.is_cuda() && edge_index.is_contiguous(),
-                    "edge_index must be a contiguous CUDA tensor");
-        TORCH_CHECK(edge_index.scalar_type() == torch::kInt64,
-                    "edge_index must be int64");
-        TORCH_CHECK(edge_index.dim() == 2 && edge_index.size(0) == 2,
-                    "edge_index must have shape (2, E), got ", edge_index.sizes());
-
-        const int64_t num_edges{edge_index.size(1)};
-
-        check_matrix(node_term, "node_term", num_nodes, out_dim, torch::kFloat32);
-        check_matrix(edge_h, "edge_h", num_edges, hidden, torch::kFloat32);
-        check_matrix(weight, "weight", out_dim, 2 * hidden, torch::kFloat32);
-
-        const float* bias_ptr{nullptr};
-        if (bias.has_value()) {
-            const torch::Tensor& b{bias.value()};
-            TORCH_CHECK(b.is_cuda() && b.is_contiguous(),
-                        "bias must be a contiguous CUDA tensor");
-            TORCH_CHECK(b.scalar_type() == torch::kFloat32, "bias must be float32");
-            TORCH_CHECK(b.dim() == 1 && b.size(0) == out_dim,
-                        "bias must have shape (", out_dim, "), got ", b.sizes());
-            bias_ptr = b.data_ptr<float>();
-        }
-
-        auto out{torch::empty({num_edges, out_dim}, node_h.options())};
-        if (num_edges == 0) return out;
-
-        const dim3 grid(
-            static_cast<unsigned>(ceil_div(static_cast<int>(num_edges), kBlockM)),
-            static_cast<unsigned>(ceil_div(static_cast<int>(out_dim), kBlockN))
-        );
-        const auto stream{at::cuda::getCurrentCUDAStream()};
-
-        const int64_t* src{edge_index.data_ptr<int64_t>()};
-        const int64_t* dst{src + num_edges};
-
-        fused_edge_update_kernel<<<grid, kThreads, 0, stream>>>(
-            node_term.data_ptr<float>(),
-            node_h.data_ptr<float>(),
-            edge_h.data_ptr<float>(),
-            weight.data_ptr<float>(),
-            bias_ptr, src, dst,
-            out.data_ptr<float>(),
-            static_cast<int>(num_edges),
-            static_cast<int>(hidden),
-            static_cast<int>(out_dim)
-        );
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-        return out;
-    }
 }  // namespace qec
+
+// ------------------------------------------------------------------
+// Host entry point
+// ------------------------------------------------------------------
+
+torch::Tensor qec::fused_edge_update(
+    torch::Tensor node_term,   // (N, H_out) = h @ W_sum^T, precomputed
+    torch::Tensor node_h,      // (N, H)
+    torch::Tensor edge_h,      // (E, H)
+    torch::Tensor weight,      // (H_out, 2H) = [W_diff | W_edge]
+    c10::optional<torch::Tensor> bias,
+    torch::Tensor edge_index   // (2, E)
+) {
+    TORCH_CHECK(node_h.is_cuda() && node_h.is_contiguous(),
+                "node_h must be a contiguous CUDA tensor");
+    TORCH_CHECK(node_h.dim() == 2, "node_h must have shape (N, H), got ",
+                node_h.sizes());
+    TORCH_CHECK(node_h.scalar_type() == torch::kFloat32,
+                "node_h must be float32");
+
+    const int64_t num_nodes{node_h.size(0)};
+    const int64_t hidden{node_h.size(1)};
+    const int64_t out_dim{weight.size(0)};
+
+    TORCH_CHECK(edge_index.is_cuda() && edge_index.is_contiguous(),
+                "edge_index must be a contiguous CUDA tensor");
+    TORCH_CHECK(edge_index.scalar_type() == torch::kInt64,
+                "edge_index must be int64");
+    TORCH_CHECK(edge_index.dim() == 2 && edge_index.size(0) == 2,
+                "edge_index must have shape (2, E), got ", edge_index.sizes());
+
+    const int64_t num_edges{edge_index.size(1)};
+
+    check_matrix(node_term, "node_term", num_nodes, out_dim, torch::kFloat32);
+    check_matrix(edge_h, "edge_h", num_edges, hidden, torch::kFloat32);
+    check_matrix(weight, "weight", out_dim, 2 * hidden, torch::kFloat32);
+
+    const float* bias_ptr{nullptr};
+    if (bias.has_value()) {
+        const torch::Tensor& b{bias.value()};
+        TORCH_CHECK(b.is_cuda() && b.is_contiguous(),
+                    "bias must be a contiguous CUDA tensor");
+        TORCH_CHECK(b.scalar_type() == torch::kFloat32, "bias must be float32");
+        TORCH_CHECK(b.dim() == 1 && b.size(0) == out_dim,
+                    "bias must have shape (", out_dim, "), got ", b.sizes());
+        bias_ptr = b.data_ptr<float>();
+    }
+
+    auto out{torch::empty({num_edges, out_dim}, node_h.options())};
+    if (num_edges == 0) return out;
+
+    const dim3 grid(
+        static_cast<unsigned>(ceil_div(static_cast<int>(num_edges), kBlockM)),
+        static_cast<unsigned>(ceil_div(static_cast<int>(out_dim), kBlockN))
+    );
+    const auto stream{at::cuda::getCurrentCUDAStream()};
+
+    const int64_t* src{edge_index.data_ptr<int64_t>()};
+    const int64_t* dst{src + num_edges};
+
+    fused_edge_update_kernel<<<grid, kThreads, 0, stream>>>(
+        node_term.data_ptr<float>(),
+        node_h.data_ptr<float>(),
+        edge_h.data_ptr<float>(),
+        weight.data_ptr<float>(),
+        bias_ptr, src, dst,
+        out.data_ptr<float>(),
+        static_cast<int>(num_edges),
+        static_cast<int>(hidden),
+        static_cast<int>(out_dim)
+    );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return out;
+}

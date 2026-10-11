@@ -6,14 +6,27 @@ import shutil
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import torch
 
+from kernels import extension
 from sampling.experiment import circuit_key, write_circuit_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def pytest_report_header() -> str:
+    """Name the device the CUDA tests ran on, or that none did."""
+    if not torch.cuda.is_available():
+        return "cuda: no device - kernel tests skip"
+    major, minor = torch.cuda.get_device_capability()
+    return (
+        f"cuda: {torch.cuda.get_device_name()} (sm_{major}{minor}), "
+        f"torch {torch.__version__}, CUDA runtime {torch.version.cuda}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +44,20 @@ def isolate_float32_matmul_precision() -> Iterator[None]:
         yield
     finally:
         torch.set_float32_matmul_precision(previous)
+
+
+@pytest.fixture(scope="session")
+def cuda_extension() -> ModuleType:
+    """The compiled kernel extension, for tests that run the CUDA kernels.
+
+    Skips only when the machine has no CUDA device.  The load itself is not
+    guarded: where a device exists, an extension that is missing, stale or
+    fails to load errors every test that requests it with the ImportError,
+    so a broken build cannot pass as a run of skipped tests.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    return extension.load()
 
 
 @pytest.fixture

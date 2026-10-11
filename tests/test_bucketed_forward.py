@@ -16,20 +16,7 @@ import torch
 from sampling.profile import resolve_profile
 
 
-def _cuda_available() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    try:
-        import kernels
-
-        return kernels.AVAILABLE
-    except ImportError:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _cuda_available(), reason="CUDA kernels not built or no GPU"
-)
+pytestmark = pytest.mark.usefixtures("cuda_extension")
 
 
 def _make_model(hidden: int = 32, layers: int = 2):
@@ -67,14 +54,9 @@ def _build_device_batch(syndromes: np.ndarray, distance: int):
     path = f"data/circuits/memory/d{distance}_r{distance}_p0_01.stim"
     circuit = stim.Circuit.from_file(path)
     metadata = extract_circuit_metadata(circuit, distance=distance, rounds=distance)
-    dev_meta = metadata_to_device(metadata, "cuda")
     device_syndromes = torch.as_tensor(syndromes, device="cuda")
     return build_fired_detector_graphs(
-        device_syndromes,
-        dev_meta.coords,
-        distance=distance,
-        rounds=distance,
-        dem_weights=dev_meta.dem_weights,
+        device_syndromes, metadata_to_device(metadata, "cuda")
     )
 
 

@@ -19,28 +19,27 @@ Fused CUDA kernels for the GNN encoder and graph construction, targeting NVIDIA 
 
 ## Build
 
-### Option A: Ahead-of-time (recommended)
-
-From the **project root**:
+From the project root:
 
 ```bash
-uv run scripts/build_kernels.py build_ext --inplace
+make kernels
 ```
 
-Verify:
+`src/kernels/extension.py` defines what is built: every `.cu` and `.cpp` file
+under `src/kernels/cpp/`, and the compile flags (no `--use_fast_math`: the
+graph-build kernels are bit-identical to the numpy builder only under IEEE
+round-to-nearest). The build stamps the extension with a sha256 of those flags
+and of every source and header, and `kernels.extension.load()` - the one place
+the extension is imported - refuses a binary whose stamp differs from the tree.
+A kernel edited without a rebuild therefore fails to load rather than being
+tested as the code it replaced.
 
-```bash
-uv run python -c "import kernels; print(kernels.AVAILABLE)"  # True
-```
-
-### Option B: JIT compilation (development)
-
-```python
-from kernels.build import build
-module = build()  # compiles on first call, cached afterwards
-```
-
-JIT is slower on first run but doesn't require the build step.
+Each kernel's host entry point is declared once, in the header of its `.cu`
+(`graph_build.h`, ...), which both the definition and `bindings.cpp` include.
+The definitions are written as qualified `qec::` names, so a definition that
+drifts from its declaration is a compile error, and pybind11 rejects at compile
+time a binding whose named arguments do not match the declared arity. The
+Python wrappers call every kernel by keyword.
 
 ## Usage
 
@@ -64,25 +63,31 @@ QECDEC_BACKEND=cuda uv run scripts/eval_gnn.py \
 Or in benchmarking:
 
 ```bash
-uv run scripts/benchmark_all.py --distance 7 --batch-size 1
+uv run scripts/benchmark_all.py --operation memory --distance 7 --batch-size 1
 ```
 
-If the kernels are not built, `set_backend("cuda")` **raises**. It does not
+If the extension does not load, `set_backend("cuda")` **raises**. It does not
 downgrade to PyTorch: a silent downgrade would let a benchmark row or an
-equivalence test carry the name of a backend that never ran. The one exception
+equivalence test carry the name of a backend that never ran. For the same
+reason `benchmark_all.py` fails on a spatial operation whose fast-path rows it
+cannot measure, rather than writing a table without them. The one exception
 is `QECDEC_BACKEND`, which is read at import time and degrades with a warning
 so that importing `model.ops` cannot fail over an env var.
 
 ## Testing
 
-Equivalence tests verify CUDA kernels match PyTorch output within `atol=1e-5`:
+Equivalence tests verify the fused kernels against PyTorch within `atol=1e-5`,
+and the graph-build kernels against the numpy builder bit for bit:
 
 ```bash
-uv run scripts/build_kernels.py build_ext --inplace
-uv run pytest tests/test_ops.py tests/test_bucketed_forward.py -v
+make kernels
+uv run --locked pytest tests/test_ops.py tests/test_bucketed_forward.py \
+    tests/test_kernel_graph_build.py tests/test_kernel_extension.py
 ```
 
-Tests are automatically skipped without a GPU or without built kernels.
+Kernel tests skip only on a machine with no CUDA device. Where a device
+exists, an extension that is missing, stale or fails to load errors every
+kernel test with the import error.
 
 ## Architecture notes
 
@@ -119,14 +124,13 @@ All kernels use:
 
 ```
 src/kernels/
-├── __init__.py          # AVAILABLE flag
+├── extension.py         # Build definition, stamp, and the one loader of _C
 ├── ops.py               # Python wrappers (fallback to PyTorch on CPU)
-├── build.py             # JIT build config
 ├── bucketed.py          # Bucketed CUDA-Graphs fast path
 ├── graph_build.py       # Python wrapper for graph construction kernels
 └── cpp/
-    ├── fused_edge_update.cu     # Fused gather + symmetric combine + GEMM
-    ├── fused_norm_residual.cu   # Fused LayerNorm + residual + dropout
-    ├── graph_build.cu           # Batched fired-detector graph construction
-    └── bindings.cpp             # pybind11 => kernels._C
+    ├── fused_edge_update.{h,cu}     # Fused gather + symmetric combine + GEMM
+    ├── fused_norm_residual.{h,cu}   # Fused LayerNorm + residual + dropout
+    ├── graph_build.{h,cu}           # Batched fired-detector graph construction
+    └── bindings.cpp                 # pybind11 => kernels._C
 ```

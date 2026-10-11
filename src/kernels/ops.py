@@ -11,9 +11,11 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from kernels._C import fused_edge_update as _cuda_edge_update
-from kernels._C import fused_norm_residual_dropout as _cuda_norm_res_drop
+from kernels.extension import load
 from model.ops import EdgeUpdateWeights, edge_update_reference
+
+
+_C = load()
 
 
 def edge_update(
@@ -46,7 +48,7 @@ def edge_update(
 
     # (N, H_out) - the linear block, evaluated per node rather than per edge.
     node_term = F.linear(x, weights.w_sum)
-    return _cuda_edge_update(
+    return _C.fused_edge_update(
         node_term=node_term.contiguous(),
         node_h=x,
         edge_h=edge_h,
@@ -80,7 +82,14 @@ def fused_norm_residual_dropout(
     Tensor, shape ``(N, H)``
     """
     if x.is_cuda and x.is_contiguous():
-        return _cuda_norm_res_drop(x, residual, gamma, beta, dropout_p, training)
+        return _C.fused_norm_residual_dropout(
+            input=x,
+            residual=residual,
+            gamma=gamma,
+            beta=beta,
+            dropout_p=dropout_p,
+            training=training,
+        )
 
     normed = F.layer_norm(x, (x.size(-1),), gamma, beta)
     return F.dropout(normed, dropout_p, training) + residual
