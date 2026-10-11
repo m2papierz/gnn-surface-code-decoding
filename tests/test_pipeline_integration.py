@@ -301,10 +301,5 @@ class TestEndToEndForwardBackward:
             # layer's edge_update / edge_norm have no gradient path.
             if name.startswith(last_edge_prefix):
                 continue
-            # The gate's output bias shifts every attention logit of a graph
-            # equally, which the per-graph softmax cancels: its true gradient
-            # is zero, and backward returns rounding noise that can be 0.0.
-            if name == "head.gate.2.bias":
-                continue
             assert param.grad is not None, f"no gradient for {name}"
             assert param.grad.abs().sum() > 0, f"zero gradient for {name}"

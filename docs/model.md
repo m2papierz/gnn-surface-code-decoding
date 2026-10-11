@@ -52,9 +52,12 @@ Set via `QECDEC_BACKEND` env var or `set_backend()` at runtime.
 ### Head (`decoder.py`)
 
 **LogicalHead** - graph-level observable prediction:
-1. Attention-weighted sum pooling over nodes => `(B, H)`
+1. Attention-weighted sum pooling over nodes => `(B, H)`; each node is scored by
+   `Linear(H, H) → tanh → Linear(H, 1)` and the scores are softmaxed over the
+   graph's nodes. The last layer has no bias: a constant added to every score
+   of a graph cancels in that softmax.
 2. Max pooling over nodes => `(B, H)`
-3. Mean pooling over edge embeddings per graph => `(B, H)`
+3. Sum pooling over nodes => `(B, H)`
 4. Concatenate all three => two-layer MLP => `(B, num_observables)` logits
 
 ### Factory

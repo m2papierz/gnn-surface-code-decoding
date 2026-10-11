@@ -94,10 +94,12 @@ class LogicalHead(nn.Module):
         super().__init__()
 
         self.num_observables = num_observables
+        # No output bias: it would shift every score of a graph equally, which
+        # the per-graph softmax cancels, leaving a parameter with no effect.
         self.gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(hidden_dim, 1, bias=False),
         )
         # Input: attn_pool (H) | max_pool (H) | sum_pool (H)
         self.mlp = nn.Sequential(
