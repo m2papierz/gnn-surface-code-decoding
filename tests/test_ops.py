@@ -288,8 +288,9 @@ class TestFusedNormResidualDropoutEquivalence:
 
         torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
-    def test_matches_the_encoders_own_norm_layer(self) -> None:
-        """Guards the kernel against the layer the encoder actually uses.
+    @pytest.mark.parametrize("update", ["node", "edge"])
+    def test_matches_the_encoders_own_norm_layers(self, update: str) -> None:
+        """Guards the kernel against the layers the encoder actually uses.
 
         The kernel normalises each row over its own channels.  PyG's
         ``LayerNorm`` defaults to ``mode="graph"``, which takes statistics
@@ -298,9 +299,13 @@ class TestFusedNormResidualDropoutEquivalence:
         """
         from torch_geometric.nn import LayerNorm
 
-        from model.encoder import _GINEBlock
+        from model.encoder import _EdgeUpdate, _NodeUpdate
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0)
+        block = (
+            _NodeUpdate(hidden_dim=32, edge_dim=6, dropout=0.0)
+            if update == "node"
+            else _EdgeUpdate(hidden_dim=32, dropout=0.0)
+        )
         assert isinstance(block.norm, LayerNorm)
         assert block.norm.mode == "node"
 
@@ -337,27 +342,26 @@ class TestEncoderEquivalence:
 
         set_backend("pytorch")
         with torch.no_grad():
-            ref_h, ref_e = encoder(x, edge_index, edge_attr)
+            ref = encoder(x, edge_index, edge_attr)
 
         set_backend("cuda")
         with torch.no_grad():
-            out_h, out_e = encoder(x, edge_index, edge_attr)
+            out = encoder(x, edge_index, edge_attr)
         set_backend("pytorch")
 
-        torch.testing.assert_close(out_h, ref_h, atol=1e-5, rtol=1e-5)
-        torch.testing.assert_close(out_e, ref_e, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
     def test_weight_cache_invalidates_on_weight_mutation(self) -> None:
-        from model.encoder import _GINEBlock
+        from model.encoder import _EdgeUpdate
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0).cuda()
+        block = _EdgeUpdate(hidden_dim=32, dropout=0.0).cuda()
 
         set_backend("cuda")
         try:
-            before = block._fused_edge_weights().w_sum.clone()
+            before = block._cuda_weights().w_sum.clone()
             with torch.no_grad():
-                block.edge_update[0].weight.add_(1.0)
-            after = block._fused_edge_weights().w_sum
+                block.in_proj.weight.add_(1.0)
+            after = block._cuda_weights().w_sum
         finally:
             set_backend("pytorch")
 
@@ -365,12 +369,12 @@ class TestEncoderEquivalence:
 
     def test_no_weight_split_off_the_fast_path(self) -> None:
         """Splitting during training would strand the parameter's gradient."""
-        from model.encoder import _GINEBlock
+        from model.encoder import _EdgeUpdate
 
-        block = _GINEBlock(hidden_dim=32, edge_dim=6, dropout=0.0)
+        block = _EdgeUpdate(hidden_dim=32, dropout=0.0)
 
         set_backend("pytorch")
-        assert block._fused_edge_weights() is None
+        assert block._cuda_weights() is None
         set_backend("compiled")
-        assert block._fused_edge_weights() is None
+        assert block._cuda_weights() is None
         set_backend("pytorch")

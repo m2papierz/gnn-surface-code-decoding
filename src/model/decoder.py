@@ -39,11 +39,17 @@ class BatchedGraph(Protocol):
         Graph count including graphs with zero nodes.
     """
 
-    x: torch.Tensor
-    edge_index: torch.Tensor
-    edge_attr: torch.Tensor
-    batch: torch.Tensor
-    num_graphs: int
+    # Read-only members, so a frozen record such as DeviceGraphBatch conforms.
+    @property
+    def x(self) -> torch.Tensor: ...
+    @property
+    def edge_index(self) -> torch.Tensor: ...
+    @property
+    def edge_attr(self) -> torch.Tensor: ...
+    @property
+    def batch(self) -> torch.Tensor: ...
+    @property
+    def num_graphs(self) -> int: ...
 
 
 def collate_graphs(graphs: Sequence[Data], device: torch.device) -> Batch:
@@ -110,11 +116,7 @@ class LogicalHead(nn.Module):
         )
 
     def forward(
-        self,
-        h: torch.Tensor,
-        batch: torch.Tensor,
-        num_graphs: int | None = None,
-        **kwargs: object,
+        self, h: torch.Tensor, batch: torch.Tensor, *, num_graphs: int
     ) -> torch.Tensor:
         """Predict logical observable logits.
 
@@ -124,11 +126,9 @@ class LogicalHead(nn.Module):
             Node embeddings from the encoder (batched).
         batch : Tensor, shape (N_total,)
             PyG batch vector mapping each node to its graph index.
-        num_graphs : int, optional
-            Total number of graphs in the batch (including empty ones
-            with zero nodes).  When provided, pooling output covers all
-            graph indices; otherwise inferred from ``batch.max() + 1``,
-            which silently drops empty graphs.
+        num_graphs : int
+            Number of graphs in the batch, including those with zero nodes,
+            which no entry of *batch* names.
 
         Returns
         -------
@@ -171,12 +171,8 @@ class QECDecoder(nn.Module):
         -------
         Tensor, shape ``(B, num_observables)``
         """
-        h, _ = self.encoder(batch.x, batch.edge_index, batch.edge_attr)
-        return self.head(
-            h,
-            batch=batch.batch,
-            num_graphs=batch.num_graphs,
-        )
+        h = self.encoder(batch.x, batch.edge_index, batch.edge_attr)
+        return self.head(h, batch.batch, num_graphs=batch.num_graphs)
 
 
 def build_model(

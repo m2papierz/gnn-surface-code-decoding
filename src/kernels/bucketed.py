@@ -44,7 +44,7 @@ from typing import Final
 
 import torch
 
-from model.decoder import QECDecoder, require_model_contract
+from model.decoder import BatchedGraph, QECDecoder, require_model_contract
 from sampling.representation import SUPPORTED_FAST_PATH_VERSIONS, DataContract
 
 
@@ -390,7 +390,7 @@ class BucketedGraphRunner:
 
         Returns
         -------
-        Tensor, shape ``(num_graphs, 1)``
+        Tensor, shape ``(num_graphs, num_observables)``
             A view into the bucket's static output buffer, valid until the
             next :meth:`forward` call on this runner.
         """
@@ -415,23 +415,22 @@ class BucketedGraphRunner:
         return buf.output[:num_graphs]
 
     @torch.no_grad()
-    def forward_from_batch(self, batch: object) -> torch.Tensor:
-        """Forward from a :class:`kernels.graph_build.DeviceGraphBatch`.
+    def forward_from_batch(self, batch: BatchedGraph) -> torch.Tensor:
+        """Forward from a batched graph, e.g. a ``DeviceGraphBatch``.
 
         Parameters
         ----------
-        batch
-            Object exposing ``x``, ``edge_index``, ``edge_attr``, ``batch``
-            and ``num_graphs``.
+        batch : BatchedGraph
 
         Returns
         -------
-        Tensor, shape ``(num_graphs, 1)``
+        Tensor, shape ``(num_graphs, num_observables)``
+            As :meth:`forward`.
         """
         return self.forward(
-            x=batch.x,  # type: ignore[attr-defined]
-            edge_index=batch.edge_index,  # type: ignore[attr-defined]
-            edge_attr=batch.edge_attr,  # type: ignore[attr-defined]
-            batch_vec=batch.batch,  # type: ignore[attr-defined]
-            num_graphs=batch.num_graphs,  # type: ignore[attr-defined]
+            x=batch.x,
+            edge_index=batch.edge_index,
+            edge_attr=batch.edge_attr,
+            batch_vec=batch.batch,
+            num_graphs=batch.num_graphs,
         )

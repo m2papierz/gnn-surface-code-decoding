@@ -291,15 +291,6 @@ class TestEndToEndForwardBackward:
         loss = criterion(logits.view(-1), batch.y)
         loss.backward()
 
-        last_layer_idx = model.encoder.num_layers - 1
-        last_edge_prefix = f"encoder.layers.{last_layer_idx}.edge_"
-
         for name, param in model.named_parameters():
-            if not param.requires_grad:
-                continue
-            # LogicalHead does not consume edge embeddings, so the last
-            # layer's edge_update / edge_norm have no gradient path.
-            if name.startswith(last_edge_prefix):
-                continue
             assert param.grad is not None, f"no gradient for {name}"
             assert param.grad.abs().sum() > 0, f"zero gradient for {name}"

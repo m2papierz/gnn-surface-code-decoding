@@ -40,29 +40,22 @@ class TestLogicalHead:
         head = LogicalHead(hidden_dim=32, num_observables=1, dropout=0.0)
         h = torch.randn(18, 32)
         batch = torch.tensor([0] * 6 + [1] * 6 + [2] * 6)
-        logits = head(h, batch)
+        logits = head(h, batch, num_graphs=3)
         assert logits.shape == (3, 1)
 
     def test_output_shape_multi_observable(self) -> None:
         head = LogicalHead(hidden_dim=32, num_observables=3, dropout=0.0)
         h = torch.randn(10, 32)
         batch = torch.tensor([0] * 4 + [1] * 6)
-        logits = head(h, batch)
+        logits = head(h, batch, num_graphs=2)
         assert logits.shape == (2, 3)
-
-    def test_ignores_extra_kwargs(self) -> None:
-        head = LogicalHead(hidden_dim=16, dropout=0.0, num_observables=1)
-        h = torch.randn(5, 16)
-        batch = torch.zeros(5, dtype=torch.long)
-        logits = head(h, batch, edge_index=None, edge_h=None, edge_attr=None)
-        assert logits.shape == (1, 1)
 
     def test_sum_pooling_gradient_flow(self) -> None:
         """Sum pooling guarantees every node receives gradient."""
         head = LogicalHead(hidden_dim=16, dropout=0.0, num_observables=1)
         h = torch.randn(8, 16, requires_grad=True)
         batch = torch.tensor([0] * 4 + [1] * 4)
-        logits = head(h, batch)
+        logits = head(h, batch, num_graphs=2)
         logits.sum().backward()
         assert h.grad is not None
         per_node_grad_norm = h.grad.abs().sum(dim=-1)
@@ -97,14 +90,5 @@ class TestQECDecoder:
         )
         logits = model(batched)
         logits.sum().backward()
-        last = model.encoder.num_layers - 1
         for name, param in model.named_parameters():
-            # LogicalHead pools only node embeddings, so the final
-            # layer's edge_update and edge_norm have no gradient path.
-            if f"layers.{last}.edge_update" in name:
-                assert param.grad is None, f"Unexpected gradient for {name}"
-                continue
-            if f"layers.{last}.edge_norm" in name:
-                assert param.grad is None, f"Unexpected gradient for {name}"
-                continue
             assert param.grad is not None, f"No gradient for {name}"

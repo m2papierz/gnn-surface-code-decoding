@@ -8,29 +8,30 @@ Graph neural network decoders for rotated surface code, operating on the detecto
                        ┌─────────────────────────────────────────────┐
                        │              QECDecoder                     │
                        │                                             │
-Batch ──► encoder ──►(h, edge_h)                                     │
-          (shared)     │                                             │
+Batch ──► encoder ──► h                                              │
+                       │                                             │
                        │──► LogicalHead ──► (B, num_obs)             │
-                       │    attn_pool ‖ max_pool ‖ edge_pool => MLP  │
+                       │    attn_pool ‖ max_pool ‖ sum_pool => MLP   │
                        └─────────────────────────────────────────────┘
 ```
 
 ### Encoder (`encoder.py`)
 
-`DetectorGraphEncoder` runs several rounds of GINEConv message passing on the detector graph with explicit edge co-evolution: each layer updates both node embeddings and edge embeddings.
+`DetectorGraphEncoder` runs `num_layers` rounds of GINEConv message passing on the detector graph with explicit edge co-evolution: between consecutive node updates, an edge update refines the edge embeddings the next node update reads. The last node update is followed by no edge update, because the head pools node embeddings only.
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
 | Convolution | GINEConv | Edge features (spatial deltas, distances, DEM weight) enter messages natively; 1-WL expressiveness |
 | Edge update | `MLP(h_src + h_dst, \|h_src − h_dst\|, e)` | Symmetric, learns edge representations jointly with nodes |
-| Normalisation | LayerNorm (nodes and edges) | Stable across variable graph sizes in a batch (d=3 and d=7 mixed) |
-| Skip connections | Additive residual per layer (nodes and edges) | Enables deeper networks without degradation |
-| Edge projection | Per-layer linear + accumulation | Each layer projects raw edge features and adds previous edge embeddings |
+| Normalisation | Per-row LayerNorm (nodes and edges) | Stable across variable graph sizes in a batch (d=3 and d=7 mixed) |
+| Skip connections | Additive residual per update (nodes and edges) | Enables deeper networks without degradation |
+| Edge projection | Per-layer linear + accumulation | Each layer projects raw edge features and adds the preceding edge update's embeddings |
+| Layout | `num_layers` node updates, `num_layers − 1` edge updates | An edge update after the last node update would reach no output |
 
 Input/output:
 
 - **In**: `x (N, 6)` node features, `edge_attr (E, 6)` edge features
-- **Out**: `h (N, hidden_dim)` node embeddings, `edge_h (E, hidden_dim)` edge embeddings
+- **Out**: `h (N, hidden_dim)` node embeddings
 
 See [Feature engineering](#feature-engineering) below for the full feature specification.
 
