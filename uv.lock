@@ -7,6 +7,7 @@ resolution-markers = [
 ]
 
 [manifest]
+constraints = [{ name = "ldpc", specifier = "==2.4.1" }]
 overrides = [{ name = "numpy", specifier = ">=2.2.0" }]
 
 [[package]]
@@ -547,10 +548,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "beliefmatching", specifier = ">=0.1.1" },
+    { name = "beliefmatching", specifier = "==0.1.1" },
     { name = "ninja", specifier = ">=1.13.0" },
     { name = "numpy", specifier = ">=2.3.5" },
-    { name = "pymatching", specifier = ">=2.3.1" },
+    { name = "pymatching", specifier = "==2.3.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "stim", specifier = "==1.15.0" },
     { name = "tesseract-decoder", specifier = "==0.1.1.dev20260802231159" },

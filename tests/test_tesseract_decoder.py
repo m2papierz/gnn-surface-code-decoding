@@ -3,7 +3,7 @@
 Verifies the Decoder protocol, output shape, and that the near-MLE decoder
 is at least as accurate as plain MWPM on a committed surface-code circuit -
 the expected ordering for a search-based decoder that approaches maximum
-likelihood (Fowler et al., arXiv:2503.10988).
+likelihood (Aghababaie Beni, Higgott & Shutty, arXiv:2503.10988).
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ class TestTesseractDecoder:
     ) -> None:
         """Tesseract LER <= MWPM LER on a surface code circuit.
 
-        Tesseract performs near-MLE beam search (Fowler et al.,
-        arXiv:2503.10988), so its logical error rate must not exceed that
+        Tesseract performs near-MLE beam search (Aghababaie Beni, Higgott &
+        Shutty, arXiv:2503.10988), so its logical error rate must not exceed that
         of minimum-weight perfect matching.
         """
         syndromes, observables = d3_syndromes_and_obs
@@ -96,17 +96,3 @@ class TestTesseractDecoder:
             f"Tesseract ({tess_errors}/{N_SHOTS}) should not be "
             f"worse than MWPM ({mwpm_errors}/{N_SHOTS})"
         )
-
-    def test_import_error_when_unavailable(self) -> None:
-        """Construction raises ImportError with a helpful message when the
-        package is not installed, rather than silently substituting."""
-        import sys
-        import unittest.mock
-
-        blocked = {
-            "tesseract_decoder": None,
-            "tesseract_decoder.tesseract": None,
-        }
-        with unittest.mock.patch.dict(sys.modules, blocked):
-            with pytest.raises(ImportError, match="tesseract-decoder"):
-                TesseractDecoder(D3_CIRCUIT)

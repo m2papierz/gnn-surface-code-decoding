@@ -117,13 +117,24 @@ visible counts.
 
 ## 6. Baselines
 
-All baselines decode the same frozen shots as the GNN:
+All baselines decode the same frozen shots as the GNN. A baseline takes only
+its circuit: its configuration is fixed in `src/decoders.py` and its package is
+pinned exactly in `pyproject.toml`, so a lock refresh cannot move a baseline.
 
-1. **PyMatching** (DEM-weighted MWPM) — primary comparison target.
-2. **BP+OSD** (via CUDA-Q) — secondary baseline.
+| Baseline (report name) | Package, exact pin | Configuration |
+|------------------------|--------------------|---------------|
+| MWPM (`mwpm`) — primary comparison target | pymatching 2.3.1 | DEM with hyperedges decomposed into edges; one matching pass |
+| Correlated matching (`correlated`) | pymatching 2.3.1 | Decomposed DEM; two-pass correlated matching |
+| Belief-Matching (`belief_matching`) | beliefmatching 0.1.1, its BP from ldpc 2.4.1 | Decomposed DEM; product-sum BP, at most 20 iterations; BP's correction where BP converges, otherwise matching weighted by BP's posteriors |
+| Tesseract (`tesseract`) | tesseract-decoder 0.1.1.dev20260802231159 | Undecomposed DEM; the package's default long-beam preset: beam 20 with beam climbing, 21 detector orders (seed 2384753), priority queue of at most 1,000,000 states |
 
-Parity decisions are made against PyMatching only. BP+OSD numbers are reported
-for context but do not enter the McNemar comparison.
+MWPM and correlated matching decode every harness point. The eval config
+chooses Belief-Matching (`include_belief_matching`) and Tesseract
+(`include_tesseract`); a baseline the config asks for either decodes or the run
+fails — none is skipped for a missing package.
+
+Parity decisions are made against MWPM only. The other baselines' numbers are
+reported for context but do not enter the McNemar comparison.
 
 ---
 
@@ -224,3 +235,15 @@ them in its `rules` block.
 
 No earlier result was produced under different rules for either comparison, so
 nothing is re-evaluated.
+
+### 9.2 Correction of 2026-10-11 — baselines named as built
+
+§6 named BP+OSD via CUDA-Q as the secondary baseline. No result was ever
+produced with BP+OSD: the harness has always decoded Belief-Matching, and §6 now
+names it, with every baseline's package, exact pin and configuration. Tesseract's
+configuration was fixed (undecomposed DEM, the package's long-beam preset)
+before any Tesseract result existed. No decision rule of §1–§5 changes, and no
+result is re-evaluated.
+
+Decisions: one per baseline in the Trurlic `evaluation` component, and
+`baseline-packages-are-required-exact-pins-imported-at-the`.

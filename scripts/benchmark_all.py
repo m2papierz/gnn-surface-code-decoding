@@ -30,7 +30,7 @@ GNN backends tested (where available):
 Classical decoders tested:
 
 ``belief_matching``
-    BP + matching (beliefmatching package), CPU, shot-by-shot.  Timed with
+    Belief-Matching (BP re-weighted matching), CPU, shot by shot.  Timed with
     ``time.perf_counter()``, same warmup and iteration count as GNN.
 
 Latency, not throughput, is the figure of merit: a real-time decoder keeps pace
@@ -57,6 +57,7 @@ import torch
 from torch_geometric.data import Batch, Data
 
 from artifact_file import write_json
+from decoders import BeliefMatchingDecoder
 from model.decoder import QECDecoder, build_model, collate_graphs
 from model.ops import set_backend
 from sampling.graph import CircuitMetadata
@@ -226,14 +227,8 @@ def _run_belief_matching(
     circuit_path: Path,
     syndromes: np.ndarray,
     n_iters: int,
-) -> dict | None:
+) -> dict:
     """Time the Belief-Matching decoder on CPU."""
-    try:
-        from decoders import BeliefMatchingDecoder
-    except ImportError:
-        logger.warning("belief_matching unavailable: beliefmatching not installed")
-        return None
-
     decoder = BeliefMatchingDecoder(circuit_path)
 
     def fn() -> None:

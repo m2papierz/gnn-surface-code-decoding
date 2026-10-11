@@ -1,14 +1,16 @@
-"""QEC decoder implementations with a shared protocol.
+"""QEC decoders behind one protocol.
 
-Thin adapters that give GNN models, PyMatching, and Belief-Matching a uniform
-``Decoder`` interface (``decode_batch(syndromes) -> observables``).
+Thin adapters that give the GNN and the classical baselines - MWPM and
+correlated matching (PyMatching), Belief-Matching and Tesseract - a uniform
+``Decoder`` interface (``decode_batch(syndromes) -> observables``). A baseline
+takes only its circuit: its configuration is fixed here, so every number it
+produces was decoded the same way.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -16,7 +18,10 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import pymatching
 import stim
+import tesseract_decoder.tesseract as tesseract
+import tesseract_decoder.utils as tesseract_utils
 import torch
+from beliefmatching import BeliefMatching
 from numpy.typing import NDArray
 from torch_geometric.data import Data
 
@@ -33,9 +38,6 @@ from sampling.representation import (
     requires_layout,
     resolve_builder,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -57,6 +59,12 @@ class Decoder(Protocol):
     def name(self) -> str: ...
 
     def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]: ...
+
+
+def _decomposed_dem(circuit_path: Path) -> stim.DetectorErrorModel:
+    """The circuit's DEM with hyperedges decomposed into graph edges."""
+    circuit = stim.Circuit.from_file(str(circuit_path))
+    return circuit.detector_error_model(decompose_errors=True)
 
 
 def _matched_observables(
@@ -84,8 +92,7 @@ class PyMatchingDecoder:
     """
 
     def __init__(self, circuit_path: Path) -> None:
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        dem = circuit.detector_error_model(decompose_errors=True)
+        dem = _decomposed_dem(circuit_path)
         self._matching = pymatching.Matching.from_detector_error_model(dem)
         self._num_obs = dem.num_observables
 
@@ -131,8 +138,7 @@ class CorrelatedMatchingDecoder:
     """
 
     def __init__(self, circuit_path: Path) -> None:
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        dem = circuit.detector_error_model(decompose_errors=True)
+        dem = _decomposed_dem(circuit_path)
         self._matching = pymatching.Matching.from_detector_error_model(
             dem, enable_correlations=True
         )
@@ -453,44 +459,25 @@ def load_gnn_checkpoint(
 
 
 class BeliefMatchingDecoder:
-    """Belief-Matching decoder combining BP soft information with matching.
+    """Belief-Matching: belief propagation re-weighting minimum-weight matching.
 
-    Uses the ``beliefmatching`` package (Oscar Higgott) which runs BP to
-    compute soft edge weights, then feeds those into PyMatching for
-    minimum-weight perfect matching. Often outperforms both plain MWPM
-    and BP+OSD.
+    Product-sum BP, at most 20 iterations, runs on the DEM's hyperedges. A shot
+    on which BP converges is predicted from BP's correction; any other is
+    matched with edge weights from BP's posteriors. Runs shot by shot on CPU.
 
     Parameters
     ----------
     circuit_path : Path
         Path to the Stim circuit file.
-    max_bp_iters : int
-        Maximum belief propagation iterations.
+
+    References
+    ----------
+    Higgott, Bohdanowicz, Kubica, Flammia & Campbell, arXiv:2203.04948.
     """
 
-    def __init__(
-        self,
-        circuit_path: Path,
-        *,
-        max_bp_iters: int = 20,
-    ) -> None:
-        try:
-            from beliefmatching import BeliefMatching
-        except ImportError as exc:
-            raise ImportError(
-                "Belief-Matching decoder requires beliefmatching: "
-                "pip install beliefmatching"
-            ) from exc
-
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        dem = circuit.detector_error_model(decompose_errors=True)
-        self._num_obs = dem.num_observables
-        self._decoder = BeliefMatching(dem, max_bp_iters=max_bp_iters)
-
-        logger.debug(
-            "BeliefMatchingDecoder: %d detectors, max_bp_iters=%d",
-            dem.num_detectors,
-            max_bp_iters,
+    def __init__(self, circuit_path: Path) -> None:
+        self._decoder = BeliefMatching(
+            _decomposed_dem(circuit_path), max_bp_iters=20, bp_method="product_sum"
         )
 
     @property
@@ -498,7 +485,7 @@ class BeliefMatchingDecoder:
         return "belief_matching"
 
     def decode_batch(self, syndromes: NDArray[np.uint8]) -> NDArray[np.uint8]:
-        """Decode syndromes via belief-matching.
+        """Decode syndromes via Belief-Matching.
 
         Parameters
         ----------
@@ -510,65 +497,44 @@ class BeliefMatchingDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        n = syndromes.shape[0]
-        out = np.empty((n, self._num_obs), dtype=np.uint8)
-        for i in range(n):
-            pred = self._decoder.decode(syndromes[i])
-            out[i] = pred[: self._num_obs].astype(np.uint8)
-        return out
+        return self._decoder.decode_batch(syndromes).astype(np.uint8)
 
 
 class TesseractDecoder:
-    """Near-MLE decoder via beam search over the DEM hypergraph.
+    """Near-MLE decoder: beam search over explanations of the detection events.
 
-    Uses ``tesseract-decoder`` (quantumlib) which performs a prioritized
-    search over detection-event explanations, approaching maximum-likelihood
-    accuracy on surface codes.
+    Searches the circuit's undecomposed DEM, whose error mechanisms it treats
+    as hyperedges, with the package's default configuration - the long-beam
+    setup of the Tesseract paper: beam 20 with beam climbing, 21 detector
+    orders, a priority queue of at most one million states.
 
     Parameters
     ----------
     circuit_path : Path
         Path to the Stim circuit file.
-    det_beam : int
-        Beam width for the detector-event search.  Larger values give higher
-        accuracy at the cost of runtime.
 
     References
     ----------
-    Fowler et al., arXiv:2503.10988.
+    Aghababaie Beni, Higgott & Shutty, arXiv:2503.10988.
     """
 
-    def __init__(
-        self,
-        circuit_path: Path,
-        *,
-        det_beam: int = 50,
-    ) -> None:
-        try:
-            from tesseract_decoder.tesseract import (
-                TesseractConfig,
-            )
-            from tesseract_decoder.tesseract import (
-                TesseractDecoder as _TesseractDecoder,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                "Tesseract decoder requires tesseract-decoder: "
-                "pip install tesseract-decoder"
-            ) from exc
-
-        circuit = stim.Circuit.from_file(str(circuit_path))
-        dem = circuit.detector_error_model(decompose_errors=True)
-        self._num_obs = dem.num_observables
-
-        config = TesseractConfig(dem=dem, det_beam=det_beam)
-        self._decoder = _TesseractDecoder(config)
-
-        logger.debug(
-            "TesseractDecoder: %d detectors, det_beam=%d",
-            dem.num_detectors,
-            det_beam,
+    def __init__(self, circuit_path: Path) -> None:
+        dem = stim.Circuit.from_file(str(circuit_path)).detector_error_model()
+        config = tesseract.TesseractConfig(
+            dem=dem,
+            det_beam=20,
+            beam_climbing=True,
+            no_revisit_dets=True,
+            merge_errors=True,
+            pqlimit=1_000_000,
+            det_orders=tesseract_utils.build_det_orders(
+                dem=dem,
+                num_det_orders=21,
+                method=tesseract_utils.DetOrder.DetIndex,
+                seed=2384753,
+            ),
         )
+        self._decoder = tesseract.TesseractDecoder(config)
 
     @property
     def name(self) -> str:
@@ -587,12 +553,12 @@ class TesseractDecoder:
         ndarray, shape ``(N, num_observables)``
             Predicted observable flips.
         """
-        # The binding annotates ``ndarray[bool, ...]``, with ``bool`` in the shape
-        # slot; a boolean ``(N, D)`` array is what it decodes.
+        # The binding annotates its argument and result ``ndarray[bool, ...]``,
+        # with ``bool`` in the shape slot; both are boolean 2-D arrays.
         predictions = self._decoder.decode_batch(
             syndromes.astype(np.bool_)  # pyright: ignore[reportArgumentType]
         )
-        return predictions[:, : self._num_obs].astype(np.uint8, copy=False)
+        return np.asarray(predictions, dtype=np.uint8)
 
 
 __all__ = [

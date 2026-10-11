@@ -1,8 +1,9 @@
 """
 Evaluation harness: multi-decoder comparison on frozen eval sets.
 
-Orchestrates paired evaluation of decoders (GNN, MWPM, BP+OSD) on identical
-pre-sampled shots with adaptive early stopping via the Haybittle-Peto boundary.
+Orchestrates paired evaluation of decoders (the GNN and the classical
+baselines) on identical pre-sampled shots with adaptive early stopping via the
+Haybittle-Peto boundary.
 
 The harness loads frozen eval sets, runs all decoders on the same syndromes in
 check-interval increments, and stops per point once McNemar resolves or the

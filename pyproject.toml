@@ -7,12 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "ninja>=1.13.0",
     "numpy>=2.3.5",
-    "pymatching>=2.3.1",
+    "pymatching==2.3.1",
     "pyyaml>=6.0.3",
     "stim==1.15.0",
     "torch>=2.9.1",
     "torch-geometric>=2.7.0",
-    "beliefmatching>=0.1.1",
+    "beliefmatching==0.1.1",
     "tqec==0.2.0",
     "tesseract-decoder==0.1.1.dev20260802231159",
 ]
@@ -32,6 +32,10 @@ index-strategy = "unsafe-best-match"
 # tqec 0.2.0 declares numpy<2.3 — a stale upper bound that tqec does not
 # actually need.  Override so our numpy>=2.3.5 resolves.
 override-dependencies = ["numpy>=2.2.0"]
+# beliefmatching runs its belief propagation through ldpc, which src/ never
+# imports; pinned here so the Belief-Matching baseline cannot move with a lock
+# refresh.
+constraint-dependencies = ["ldpc==2.4.1"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

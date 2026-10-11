@@ -81,8 +81,11 @@ input or output width is not its contract's.
 | `PyMatchingDecoder` | DEM-weighted MWPM via PyMatching |
 | `CorrelatedMatchingDecoder` | Two-pass correlated matching via PyMatching |
 | `GNNDecoder` | Trained GNN model with graph construction |
-| `BeliefMatchingDecoder` | Belief-propagation + OSD via ldpc |
-| `TesseractDecoder` | Near-MLE accuracy ceiling via Tesseract |
+| `BeliefMatchingDecoder` | Belief-Matching: BP posteriors re-weight matching, via beliefmatching |
+| `TesseractDecoder` | Near-MLE accuracy ceiling: beam search via tesseract-decoder |
+
+A classical baseline takes only its circuit; its package, exact pin and
+configuration are listed in `docs/eval_protocol.md` §6.
 
 ## Training
 

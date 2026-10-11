@@ -132,25 +132,25 @@ def _print_harness_results(report: EvalReport) -> None:
 
         if include_per_round:
             header = (
-                f"{'Decoder':<10} {'LER':>10} {'95% CI':>24} "
+                f"{'Decoder':<15} {'LER':>10} {'95% CI':>24} "
                 f"{'ε (per-round)':>14} {'n_errors':>10}"
             )
         else:
-            header = f"{'Decoder':<10} {'LER':>10} {'95% CI':>24} {'n_errors':>10}"
+            header = f"{'Decoder':<15} {'LER':>10} {'95% CI':>24} {'n_errors':>10}"
         print(header)
         print("-" * len(header))
 
         for name, dr in result.decoder_results.items():
             if include_per_round:
                 print(
-                    f"{name:<10} {dr.ler:>10.6f} "
+                    f"{name:<15} {dr.ler:>10.6f} "
                     f"[{dr.ler_interval.lower:.6f}, {dr.ler_interval.upper:.6f}] "
                     f"{dr.per_round_ler:>14.6f} "
                     f"{dr.n_errors:>10}"
                 )
             else:
                 print(
-                    f"{name:<10} {dr.ler:>10.6f} "
+                    f"{name:<15} {dr.ler:>10.6f} "
                     f"[{dr.ler_interval.lower:.6f}, {dr.ler_interval.upper:.6f}] "
                     f"{dr.n_errors:>10}"
                 )
@@ -490,8 +490,16 @@ def parse_args(
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--eval-root", type=Path, default=None)
     parser.add_argument("--circuit-dir", type=Path, default=None)
-    parser.add_argument("--no-bp-osd", action="store_true", help="Skip Belief-Matching")
-    parser.add_argument("--tesseract", action="store_true", default=None)
+    parser.add_argument(
+        "--no-belief-matching",
+        action="store_true",
+        help="Leave the Belief-Matching baseline out of the harness",
+    )
+    parser.add_argument(
+        "--tesseract",
+        action="store_true",
+        help="Add the Tesseract baseline to the harness (slow)",
+    )
     parser.add_argument("--shots", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("-o", "--output", type=Path, default=None)
@@ -519,7 +527,7 @@ def parse_args(
         "seed": args.seed,
     }
 
-    if args.no_bp_osd:
+    if args.no_belief_matching:
         field_map["include_belief_matching"] = False
     if args.tesseract:
         field_map["include_tesseract"] = True
